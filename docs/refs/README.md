@@ -68,3 +68,58 @@ The matching source for the 4.1.35 router kernel is **not** in the BPI-W2
 BSP. It is in `BPI-1296-Android7` under `Openwrt/linux-4.1.7/` (the directory
 name is wrong; the `Makefile` says `SUBLEVEL = 35`). That clone is sparse, so
 use `git ls-tree -r HEAD --name-only` rather than `find` to see what is in it.
+
+## The Android 7 reference tree
+
+> **Not distributed with the project** (`/vendor/` is gitignored). It is not
+> fetched by `make sources` either, because nothing in the build needs it —
+> it is reference material for §10 and §11 of `../06-changes.md`.
+
+`BPI-SINOVOIP/BPI-1296-Android7` holds the vendor's Android userspace *and*
+the complete OpenWrt/router side, including the 4.1.35 kernel. It is large,
+so clone it partially:
+
+```sh
+git clone --filter=blob:none --no-checkout --depth 1 \
+    https://github.com/BPI-SINOVOIP/BPI-1296-Android7.git \
+    vendor/bpi-1296-android7
+cd vendor/bpi-1296-android7
+git sparse-checkout set \
+    android/device/realtek/kylin \
+    android/hardware/realtek/VideoEngine \
+    android/hardware/realtek/VideoEngine2 \
+    android/hardware/realtek/tv_input
+git checkout
+```
+
+That is ~260 MB and is what §10 (hardware encoders) needs — the VideoEngine
+blobs and `tv_input`'s HDMI RX HAL.
+
+For §11 (the second Ethernet port), add the router side as needed:
+
+```sh
+git sparse-checkout add \
+    Openwrt/linux-4.1.7/drivers/soc/realtek/rtd129x/hw_nat \
+    Openwrt/linux-4.1.7/net \
+    Openwrt/linux-4.1.7/include
+```
+
+which costs about another 850 MB of git objects. The build profiles
+(`Openwrt/bananapi-router_defconfig`, `Openwrt/.config.bananapi-router`) and
+`Openwrt/target/linux/rtd1295/modules.mk` are small and can be read without
+checking anything out:
+
+```sh
+git show HEAD:Openwrt/bananapi-router_defconfig
+```
+
+**The trap:** a sparse, blob-filtered clone reports absence for everything
+outside the checkout. `find` and `grep` on the working tree will tell you a
+file does not exist when it does. Ask git instead:
+
+```sh
+git ls-tree -r HEAD --name-only | grep -i hw_nat
+```
+
+Two wrong conclusions in `../06-changes.md` §11 came from forgetting this,
+and both corrections are recorded there.
