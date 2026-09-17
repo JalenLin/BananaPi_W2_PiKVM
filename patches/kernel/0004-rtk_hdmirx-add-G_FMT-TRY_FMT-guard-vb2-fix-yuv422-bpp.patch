@@ -1,0 +1,446 @@
+--- a/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.c
++++ b/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.c
+@@ -125,6 +125,16 @@
+ 		/* V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21 */
+ 		bpp = 12;
+ 		break;
++	case OUT_8BIT_YUV422:
++		/*
++		 * V4L2_PIX_FMT_NV16 -- a W*H Y plane plus a W*H UV plane, 16bpp
++		 * in total. There was no case for this, so it fell through to the
++		 * 32bpp default and the buffer was allocated at exactly twice the
++		 * size it needed (measured: 1024x768 got 3145728 rather than
++		 * 1572864, with the second half all zeros).
++		 */
++		bpp = 16;
++		break;
+ 	case OUT_ARGB:
+ 		/* V4L2_PIX_FMT_BGR32 */
+ 		bpp = 32;
+@@ -141,6 +151,62 @@
+ 	return bpp;
+ }
+ 
++/* The inverse of out_color_to_bpp(), used by VIDIOC_G_FMT to report the
++   current format */
++static __u32 out_color_to_fourcc(MIPI_OUT_COLOR_SPACE_T output_color)
++{
++	switch (output_color) {
++	case OUT_8BIT_YUV422:
++		return V4L2_PIX_FMT_NV16;
++	case OUT_8BIT_YUV420:
++		return (mipi_top.uv_seq == UV_NV21) ?
++			V4L2_PIX_FMT_NV21 : V4L2_PIX_FMT_NV12;
++	case OUT_ARGB:
++		return V4L2_PIX_FMT_BGR32;
++	default:
++		return V4L2_PIX_FMT_NV16;
++	}
++}
++
++/* Pure validation, unlike V4L2_format_parse() which also mutates mipi_top */
++static bool fourcc_supported(__u32 fcc)
++{
++	switch (fcc) {
++	case V4L2_PIX_FMT_NV12:
++	case V4L2_PIX_FMT_NV21:
++	case V4L2_PIX_FMT_NV16:
++	case V4L2_PIX_FMT_BGR32:
++		return true;
++	default:
++		return false;
++	}
++}
++
++/* Matches how hdmi_queue_setup() computes things, so userspace never sees an
++   inconsistent size */
++static void fill_pix_format(struct v4l2_pix_format *pix, unsigned int w,
++			    unsigned int h, MIPI_OUT_COLOR_SPACE_T color)
++{
++	int bpp = out_color_to_bpp(color);
++
++	memset(pix, 0, sizeof(*pix));
++	pix->width = w;
++	pix->height = h;
++	pix->pixelformat = out_color_to_fourcc(color);
++	pix->field = hdmi.tx_timing.progressive ?
++		V4L2_FIELD_NONE : V4L2_FIELD_INTERLACED;
++	pix->colorspace = V4L2_COLORSPACE_SRGB;
++
++	if (color >= OUT_ARGB) {
++		pix->bytesperline = w * bpp / 8;
++		pix->sizeimage = w * h * bpp / 8;
++	} else {
++		/* semi-planar: bytesperline refers to the Y plane's stride */
++		pix->bytesperline = roundup16(w);
++		pix->sizeimage = roundup16(w) * roundup16(h) * bpp / 8;
++	}
++}
++
+ static long v4l2_hdmi_do_ioctl(struct file *file, unsigned int cmd, void *arg)
+ {
+ 	long ret = 0;
+@@ -262,6 +328,129 @@
+ 		}
+ 		break;
+ 	}
++	case VIDIOC_ENUMINPUT:
++	{
++		/*
++		 * There was no input enumeration at all. A standard V4L2 capture
++		 * device must expose at least one input, and ustreamer calls
++		 * VIDIOC_S_INPUT unconditionally and gives up when it fails:
++		 *   ERROR -- CAP: Can't set input channel
++		 * Android's tv_input HAL never touches these ioctls, which is why
++		 * the BSP never implemented them.
++		 */
++		struct v4l2_input *inp = arg;
++
++		if (inp->index != 0) {
++			ret = -EINVAL;
++			goto exit;
++		}
++		memset(inp, 0, sizeof(*inp));
++		inp->index = 0;
++		strlcpy(inp->name, "HDMI RX", sizeof(inp->name));
++		inp->type = V4L2_INPUT_TYPE_CAMERA;
++		break;
++	}
++	case VIDIOC_G_INPUT:
++	{
++		*(int *)arg = 0;
++		break;
++	}
++	case VIDIOC_S_INPUT:
++	{
++		if (*(int *)arg != 0) {
++			ret = -EINVAL;
++			goto exit;
++		}
++		break;
++	}
++	case VIDIOC_G_FMT:
++	{
++		/*
++		 * G_FMT was never implemented. Both v4l2-ctl and ustreamer call it
++		 * before S_FMT and, on receiving -ENOTTY, never issue S_FMT at
++		 * all. mipi_top.pitch and v_output_len then stay 0, the offset
++		 * computed by set_video_DDR_start_addr() is 0, the Y and UV plane
++		 * addresses overlap, and the MIPI wrapper never produces a frame.
++		 */
++		struct v4l2_format *fmt = arg;
++		unsigned int w, h;
++
++		if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
++			ret = -EINVAL;
++			goto exit;
++		}
++
++		if (dev->fmt_set) {
++			/* userspace has set a format explicitly; report it */
++			fill_pix_format(&fmt->fmt.pix, dev->width, dev->height,
++					dev->outfmt);
++		} else {
++			/*
++			 * Nothing set yet. Report the currently detected input
++			 * timings rather than probe's static defaults, so a capture
++			 * client gets dimensions it can actually use. With no signal
++			 * present, fall back to probe's defaults.
++			 */
++			w = mipi_top.h_input_len;
++			h = mipi_top.v_input_len;
++			if (!hdmi.tx_timing.progressive)
++				h <<= 1;
++			if (!w || !h) {
++				w = dev->width;
++				h = dev->height;
++			}
++			fill_pix_format(&fmt->fmt.pix, w, h, dev->outfmt);
++		}
++
++		HDMIRX_INFO(" ioctl VIDIOC_G_FMT,%ux%u,fcc=0x%08x",
++			fmt->fmt.pix.width, fmt->fmt.pix.height,
++			fmt->fmt.pix.pixelformat);
++		break;
++	}
++	case VIDIOC_TRY_FMT:
++	{
++		struct v4l2_format *fmt = arg;
++		MIPI_OUT_COLOR_SPACE_T color;
++		unsigned int w, h, max_w, max_h;
++
++		if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
++			ret = -EINVAL;
++			goto exit;
++		}
++
++		if (!fourcc_supported(fmt->fmt.pix.pixelformat))
++			fmt->fmt.pix.pixelformat = V4L2_PIX_FMT_NV16;
++
++		switch (fmt->fmt.pix.pixelformat) {
++		case V4L2_PIX_FMT_NV12:
++		case V4L2_PIX_FMT_NV21:
++			color = OUT_8BIT_YUV420;
++			break;
++		case V4L2_PIX_FMT_BGR32:
++			color = OUT_ARGB;
++			break;
++		default:
++			color = OUT_8BIT_YUV422;
++			break;
++		}
++
++		/* The output must not exceed the detected input; the hardware can
++		   only scale down */
++		max_w = mipi_top.h_input_len;
++		max_h = mipi_top.v_input_len;
++		if (!hdmi.tx_timing.progressive)
++			max_h <<= 1;
++
++		w = fmt->fmt.pix.width;
++		h = fmt->fmt.pix.height;
++		if (max_w && (w == 0 || w > max_w))
++			w = max_w;
++		if (max_h && (h == 0 || h > max_h))
++			h = max_h;
++
++		fill_pix_format(&fmt->fmt.pix, w, h, color);
++		break;
++	}
+ 	case VIDIOC_S_FMT:
+ 	{
+ 		struct v4l2_format *fmt = arg;
+@@ -271,6 +460,7 @@
+ 		dev->height = fmt->fmt.pix.height;
+ 		dev->outfmt = V4L2_format_parse(fmt->fmt.pix.pixelformat);
+ 		dev->bpp = out_color_to_bpp(dev->outfmt);
++		dev->fmt_set = true;
+ 		HDMIRX_INFO(" ioctl VIDIOC_S_FMT,%dx%d,color=0x%x",
+ 			fmt->fmt.pix.width, fmt->fmt.pix.height, dev->outfmt);
+ 
+@@ -330,6 +520,18 @@
+ 			HDMIRX_ERROR("vb2_reqbufs failed: %ld", ret);
+ 			goto exit;
+ 		}
++
++		/*
++		 * Claim the queue. This driver calls vb2_reqbufs() directly rather
++		 * than going through vb2's v4l2 helper (vb2_ioctl_reqbufs), so
++		 * q->owner was never set -- and vb2_fop_release() only calls
++		 * vb2_queue_release() when file->private_data == q->owner. The
++		 * result was that closing the device never freed the buffers and
++		 * the next REQBUFS returned -EBUSY, making the device effectively
++		 * single-use for any client that restarts streaming (ustreamer
++		 * restarting on a resolution change, for example).
++		 */
++		vq->owner = file->private_data;
+ 		break;
+ 	}
+ 	case VIDIOC_QUERYBUF:
+@@ -340,6 +542,12 @@
+ 		 * HDMIRX_INFO(" ioctl VIDIOC_QUERYBUF index(%u) type(%u) length(%u)",
+ 		 *	buf->index,buf->type,buf->length);
+ 		 */
++		if (!dev->queue_inited) {
++			HDMIRX_ERROR(" %s before REQBUFS", __func__);
++			ret = -EINVAL;
++			goto exit;
++		}
++
+ 		ret = vb2_querybuf(&dev->vb_hdmidq, buf);
+ 
+ 		if (ret < 0)
+@@ -352,6 +560,12 @@
+ 
+ 		/* HDMIRX_INFO(" ioctl VIDIOC_QBUF"); */
+ 
++		if (!dev->queue_inited) {
++			HDMIRX_ERROR(" %s before REQBUFS", __func__);
++			ret = -EINVAL;
++			goto exit;
++		}
++
+ 		ret = vb2_qbuf(&dev->vb_hdmidq, buf);
+ 
+ 		if (ret < 0)
+@@ -364,6 +578,12 @@
+ 
+ 		/*HDMIRX_INFO(" ioctl VIDIOC_DQBUF"); */
+ 
++		if (!dev->queue_inited) {
++			HDMIRX_ERROR(" %s before REQBUFS", __func__);
++			ret = -EINVAL;
++			goto exit;
++		}
++
+ 		ret = vb2_dqbuf(&dev->vb_hdmidq, buf, file->f_flags & O_NONBLOCK);
+ 		if (ret == 0)
+ 			atomic_dec(&dev->hdmidq.rcnt);
+@@ -378,7 +598,17 @@
+ 	{
+ 		HDMIRX_INFO(" ioctl VIDIOC_STREAMON");
+ 
+-		vb2_streamon(&dev->vb_hdmidq, dev->vb_hdmidq.type);
++		if (!dev->queue_inited) {
++			HDMIRX_ERROR(" %s before REQBUFS", __func__);
++			ret = -EINVAL;
++			goto exit;
++		}
++
++		ret = vb2_streamon(&dev->vb_hdmidq, dev->vb_hdmidq.type);
++		if (ret < 0) {
++			HDMIRX_ERROR(" ioctl VIDIOC_STREAMON fail: %ld", ret);
++			goto exit;
++		}
+ 
+ 		break;
+ 	}
+@@ -388,11 +618,33 @@
+ 
+ 		HDMIRX_INFO(" ioctl VIDIOC_STREAMOFF");
+ 
++		/*
++		 * If the queue has not been through REQBUFS (and therefore not
++		 * through vb2_queue_init), vb2_streamoff() reaches
++		 * __vb2_queue_cancel(), which calls wake_up_all() on an all-zero
++		 * wait queue, producing:
++		 *
++		 *   Unable to handle kernel NULL pointer dereference at 00000000
++		 *   PC is at __wake_up_common+0x38/0xa0
++		 *   [<...>] __vb2_queue_cancel+0x7c/0x188
++		 *   [<...>] vb2_core_streamoff+0x54/0xb8
++		 *
++		 * After the oops the process is stuck in D state inside
++		 * _vb2_fop_release holding the device node, userspace hangs with
++		 * it, and only a power cycle recovers.
++		 */
++		if (!dev->queue_inited) {
++			HDMIRX_ERROR(" %s before REQBUFS", __func__);
++			ret = -EINVAL;
++			goto exit;
++		}
++
+ 		vb2_streamoff(&dev->vb_hdmidq, dev->vb_hdmidq.type);
+ 
+ 		/* Release queue */
+ 		vq = &dev->vb_hdmidq;
+ 		vb2_queue_release(vq);
++		dev->queue_inited = false;
+ 
+ 		hdmi_timestamp_mode = 0;
+ 
+@@ -554,6 +806,28 @@
+ 	return 0;
+ }
+ 
++int v4l2_mipi_top_release(struct file *filp)
++{
++	struct v4l2_hdmi_dev *dev = video_drvdata(filp);
++	int ret;
++
++	/*
++	 * vb2_fop_release() already does the whole teardown:
++	 *   - frees the queue and buffers when file->private_data == q->owner
++	 *   - finally calls v4l2_fh_release(), which del/exit/kfrees the
++	 *     v4l2_fh allocated at open and clears private_data
++	 *
++	 * So this must not touch v4l2_fh itself -- that would be a
++	 * use-after-free. All that is needed here is to reset the driver's own
++	 * flags.
++	 */
++	ret = vb2_fop_release(filp);
++	if (dev)
++		dev->queue_inited = false;
++
++	return ret;
++}
++
+ static ssize_t show_hdmirx_bufcnt(struct device *cd, struct device_attribute *attr, char *buf)
+ {
+ 	struct video_device *vfd = container_of(cd, struct video_device, dev);
+--- a/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.h
++++ b/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.h
+@@ -54,10 +54,12 @@
+ 	__u32			reserved;
+ };
+ 
++int v4l2_mipi_top_release(struct file *filp);
++
+ static const struct v4l2_file_operations hdmi_fops = {
+ 	.owner			= THIS_MODULE,
+ 	.open			= v4l2_mipi_top_open,
+-	.release		= vb2_fop_release,
++	.release		= v4l2_mipi_top_release,
+ 	.read			= vb2_fop_read,
+ 	.poll			= vb2_fop_poll,
+ 	.unlocked_ioctl = v4l2_hdmi_ioctl, /* V4L2 ioctl handler */
+--- a/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/v4l2_hdmi_dev.c
++++ b/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/v4l2_hdmi_dev.c
+@@ -56,6 +56,8 @@
+ 
+ int hdmirx_queue_init(struct v4l2_hdmi_dev *dev, struct vb2_queue *q, enum v4l2_memory memory)
+ {
++	int ret;
++
+ 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+ 	q->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF; /* | VB2_READ; */
+ 	q->drv_priv = dev;
+@@ -75,7 +77,11 @@
+ 		return -EINVAL;
+ 	}
+ 
+-	return vb2_queue_init(q);
++	ret = vb2_queue_init(q);
++	if (ret == 0)
++		dev->queue_inited = true;
++
++	return ret;
+ }
+ 
+ int hdmi_queue_setup(struct vb2_queue *vq,
+@@ -527,10 +533,20 @@
+ 
+ 	pdev->dev.platform_data = hdmi_dev;
+ 
+-	/* Set default value */
++	/*
++	 * Set default value
++	 *
++	 * This used to set width/height/bpp but not outfmt, leaving outfmt at
++	 * kzalloc's 0 -- which is not a valid MIPI_OUT_COLOR_SPACE_T (the
++	 * enumeration starts at 0x2), so out_color_to_bpp() and
++	 * out_color_to_fourcc() both fell through to their defaults. Set a
++	 * mutually consistent set of defaults instead.
++	 */
+ 	hdmi_dev->width = 1920;
+ 	hdmi_dev->height = 1080;
+-	hdmi_dev->bpp = 12;/* OUT_YUV420 */
++	hdmi_dev->outfmt = OUT_8BIT_YUV422;
++	hdmi_dev->bpp = 16;/* NV16 */
++	hdmi_dev->fmt_set = false;
+ 
+ 	mipi_top.src_sel = 1;
+ 
+--- a/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/v4l2_hdmi_dev.h
++++ b/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/v4l2_hdmi_dev.h
+@@ -112,6 +112,20 @@
+ 	unsigned int		   outfmt;
+ 	unsigned int		   bpp;
+ 	struct vb2_queue	   vb_hdmidq;
++	/*
++	 * vb_hdmidq is only passed to vb2_queue_init() inside the
++	 * VIDIOC_REQBUFS handler. Issuing STREAMOFF/QBUF and friends before
++	 * that touches an uninitialised wait queue (dev comes from kzalloc, so
++	 * done_wq.task_list is all zeros) and oopses.
++	 */
++	bool			   queue_inited;
++	/*
++	 * probe assigns default width/height, so those alone cannot tell
++	 * whether userspace has actually issued S_FMT. G_FMT needs to know, to
++	 * decide between reporting the configured format and the currently
++	 * detected input timings.
++	 */
++	bool			   fmt_set;
+ 
+ 	struct mipi_ion_buf ion_buf;
+ };

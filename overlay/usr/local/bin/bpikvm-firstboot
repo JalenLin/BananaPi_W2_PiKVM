@@ -1,0 +1,52 @@
+#!/bin/bash
+# Generate this board's own keys on the first boot.
+#
+# SSH host keys and KVMD's TLS certificates are deliberately not baked into
+# the image: that would make every card flashed from it share one private key.
+# build-rootfs deletes the host keys openssh's installation generates, and
+# this script creates them at boot instead.
+#
+# Idempotent: anything that already exists is left alone.
+set -eu
+
+STAMP=/var/lib/bpikvm/firstboot-done
+
+# Grow root to fill the card first. A failure here must not block key
+# generation -- without keys the machine is unreachable, whereas an unexpanded
+# card merely has less space. Those are not equally serious.
+if ! /usr/local/bin/bpikvm-expand-rootfs; then
+    echo "warning: root expansion failed; run bpikvm-expand-rootfs by hand later" >&2
+fi
+
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    echo "generating SSH host keys"
+    ssh-keygen -A
+fi
+
+if [ ! -e /etc/kvmd/nginx/ssl/server.crt ]; then
+    echo "generating the KVMD-Nginx certificate"
+    kvmd-gencert --do-the-thing
+fi
+
+if [ ! -e /etc/kvmd/vnc/ssl/server.crt ]; then
+    echo "generating the KVMD-VNC certificate"
+    kvmd-gencert --do-the-thing --vnc
+fi
+
+# Permissions follow post_install() from upstream's kvmd.install
+for target in nginx vnc; do
+    dir="/etc/kvmd/$target/ssl"
+    [ -d "$dir" ] || continue
+    chown root:root "$dir"
+    if [ -f "$dir/server.key" ] && [ ! -L "$dir/server.key" ]; then
+        chown "root:kvmd-$target" "$dir/server.key"
+        chmod 440 "$dir/server.key"
+    fi
+    if [ -f "$dir/server.crt" ] && [ ! -L "$dir/server.crt" ]; then
+        chown "root:kvmd-$target" "$dir/server.crt"
+        chmod 444 "$dir/server.crt"
+    fi
+done
+
+mkdir -p "$(dirname "$STAMP")"
+date -Is > "$STAMP"

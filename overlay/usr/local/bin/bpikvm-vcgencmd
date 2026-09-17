@@ -1,0 +1,17 @@
+#!/bin/sh
+# A stand-in for vcgencmd.
+#
+# vcgencmd is a Raspberry Pi VideoCore tool and the RTD1296 has no equivalent.
+# kvmd's health monitor runs `vcgencmd get_throttled` every 5 seconds and
+# raises FileNotFoundError when it is missing.
+#
+# Pointing vcgencmd_cmd at /bin/true was the first attempt, but that merely
+# swaps one error for another:
+#   Can't parse [ /bin/true get_throttled ] output: '': ValueError
+# kvmd's parser is int(text.split("=")[-1].strip(), 16), so it needs valid
+# output. 0 means "no undervoltage, no frequency capping, no thermal
+# throttling".
+case "$1" in
+    get_throttled) echo "throttled=0x0" ;;
+    *)             exit 0 ;;
+esac

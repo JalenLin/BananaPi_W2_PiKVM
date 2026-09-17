@@ -1,0 +1,17 @@
+# Local overrides for the BPI-W2. Platform configuration lives in
+# /usr/lib/kvmd/main.yaml.
+#
+# Key paths must match kvmd/apps/_scheme.py exactly: kvmd silently ignores
+# override keys it does not recognise (`kvmd -M` then prints {}), so a typo
+# produces no warning at all.
+
+kvmd:
+    info:
+        hw:
+            # vcgencmd is a Raspberry Pi VideoCore tool; the RTD1296 has no
+            # equivalent. Without it kvmd raises FileNotFoundError every 5
+            # seconds, and pointing it at /bin/true only swaps that for
+            # "Can't parse ... ValueError", because kvmd runs
+            # int(text.split("=")[-1], 16) on the output. So give it a
+            # stand-in that prints something valid.
+            vcgencmd_cmd: ["/usr/local/bin/bpikvm-vcgencmd"]

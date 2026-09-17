@@ -1,0 +1,45 @@
+#!/bin/bash
+# Grow the root partition and filesystem to fill the whole card.
+#
+# The image itself is only 3 GB, so the rest of a 16/32 GB card would go
+# unused. bpikvm-firstboot.service calls this on the first boot, and it can be
+# re-run by hand (it does nothing if root is already at maximum size).
+#
+# root is the last partition in this image, so it can be done online:
+# growpart rewrites the partition table, partx tells the kernel about the new
+# size, and resize2fs grows the mounted ext4 in place.
+#
+# The device name is not hardcoded -- the same image may boot from SD
+# (mmcblk0p2) or USB (sda2).
+set -eu
+
+PART="$(findmnt -n -o SOURCE / || true)"
+case "$PART" in
+    /dev/*) ;;
+    *) echo "root is not a block device ('$PART'), skipping expansion"; exit 0 ;;
+esac
+
+NAME="$(basename "$PART")"
+PKNAME="$(lsblk -no PKNAME "$PART" 2>/dev/null | head -1 | tr -d ' ')"
+[ -n "$PKNAME" ] || { echo "cannot find the parent device of $PART, skipping expansion"; exit 0; }
+DISK="/dev/$PKNAME"
+NUM="$(cat "/sys/class/block/$NAME/partition" 2>/dev/null || true)"
+[ -n "$NUM" ] || { echo "cannot read the partition number of $PART, skipping expansion"; exit 0; }
+
+echo "root=$PART  disk=$DISK  partition=$NUM"
+echo "before: $(df -h / | awk 'NR==2{print $2" total, "$4" free"}')"
+
+# growpart exit codes: 0 = changed, 1 = no change needed (NOCHANGE), 2 = failed
+rc=0
+growpart "$DISK" "$NUM" || rc=$?
+case "$rc" in
+    0) partx -u "$DISK" || true ;;
+    1) echo "partition is already at maximum size" ;;
+    *) echo "growpart failed (rc=$rc)" >&2; exit "$rc" ;;
+esac
+
+# Even when the partition did not change, the filesystem may still be short
+# (for instance if a previous run was interrupted halfway)
+resize2fs "$PART"
+
+echo "after : $(df -h / | awk 'NR==2{print $2" total, "$4" free"}')"

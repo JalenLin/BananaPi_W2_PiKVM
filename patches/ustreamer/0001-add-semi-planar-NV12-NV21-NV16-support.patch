@@ -1,0 +1,181 @@
+diff --git a/src/libs/capture.c b/src/libs/capture.c
+index 72d5531..9ea04ef 100644
+--- a/src/libs/capture.c
++++ b/src/libs/capture.c
+@@ -73,6 +73,9 @@ static const struct {
+ 	{"UYVY",	V4L2_PIX_FMT_UYVY,		MEDIA_BUS_FMT_UYVY8_1X16},
+ 	{"YUV420",	V4L2_PIX_FMT_YUV420,	MEDIA_BUS_FMT_YUV8_1X24},
+ 	{"YVU420",	V4L2_PIX_FMT_YVU420,	0},
++	{"NV12",	V4L2_PIX_FMT_NV12,		MEDIA_BUS_FMT_UYVY8_1_5X8},
++	{"NV21",	V4L2_PIX_FMT_NV21,		0},
++	{"NV16",	V4L2_PIX_FMT_NV16,		MEDIA_BUS_FMT_UYVY8_1X16},
+ 	{"GREY",	V4L2_PIX_FMT_GREY,		MEDIA_BUS_FMT_Y8_1X8},
+ 	{"RGB565",	V4L2_PIX_FMT_RGB565,	MEDIA_BUS_FMT_RGB565_1X16},
+ 	{"RGB24",	V4L2_PIX_FMT_RGB24,		MEDIA_BUS_FMT_RGB888_1X24},
+diff --git a/src/libs/frame.c b/src/libs/frame.c
+index a770969..2c37f56 100644
+--- a/src/libs/frame.c
++++ b/src/libs/frame.c
+@@ -83,6 +83,10 @@ uint us_frame_get_padding(const us_frame_s *frame) {
+ 	switch (frame->format) {
+ 		case V4L2_PIX_FMT_YUV420:
+ 		case V4L2_PIX_FMT_YVU420:
++		// Semi-planar: the stride refers to the luma plane, 1 byte per pixel
++		case V4L2_PIX_FMT_NV12:
++		case V4L2_PIX_FMT_NV21:
++		case V4L2_PIX_FMT_NV16:
+ 		case V4L2_PIX_FMT_GREY:
+ 			bytes_per_pixel = 1;
+ 			break;
+diff --git a/src/ustreamer/encoders/cpu/encoder.c b/src/ustreamer/encoders/cpu/encoder.c
+index 665b3b6..58d08eb 100644
+--- a/src/ustreamer/encoders/cpu/encoder.c
++++ b/src/ustreamer/encoders/cpu/encoder.c
+@@ -51,6 +51,7 @@ static void _jpeg_set_dest_frame(j_compress_ptr jpeg, us_frame_s *frame);
+ 
+ static void _jpeg_write_scanlines_yuv(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
+ static void _jpeg_write_scanlines_yuv_planar(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
++static void _jpeg_write_scanlines_yuv_semiplanar(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
+ static void _jpeg_write_scanlines_grey(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
+ static void _jpeg_write_scanlines_rgb565(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
+ static void _jpeg_write_scanlines_rgb24(struct jpeg_compress_struct *jpeg, const us_frame_s *frame);
+@@ -86,6 +87,9 @@ void us_cpu_encoder_compress(const us_frame_s *src, us_frame_s *dest, uint quali
+ 		case V4L2_PIX_FMT_UYVY:
+ 		case V4L2_PIX_FMT_YUV420:
+ 		case V4L2_PIX_FMT_YVU420:
++		case V4L2_PIX_FMT_NV12:
++		case V4L2_PIX_FMT_NV21:
++		case V4L2_PIX_FMT_NV16:
+ 			jpeg.in_color_space = JCS_YCbCr;
+ 			break;
+ 		case V4L2_PIX_FMT_GREY:
+@@ -119,6 +123,12 @@ void us_cpu_encoder_compress(const us_frame_s *src, us_frame_s *dest, uint quali
+ 		case V4L2_PIX_FMT_YVU420:
+ 			_jpeg_write_scanlines_yuv_planar(&jpeg, src);
+ 			break;
++
++		case V4L2_PIX_FMT_NV12:
++		case V4L2_PIX_FMT_NV21:
++		case V4L2_PIX_FMT_NV16:
++			_jpeg_write_scanlines_yuv_semiplanar(&jpeg, src);
++			break;
+ 		
+ 		case V4L2_PIX_FMT_GREY:
+ 			_jpeg_write_scanlines_grey(&jpeg, src);
+@@ -265,6 +275,116 @@ static void _jpeg_write_scanlines_yuv_planar(struct jpeg_compress_struct *jpeg,
+ 	free(line_buf);
+ }
+ 
++static void _jpeg_write_scanlines_yuv_semiplanar(struct jpeg_compress_struct *jpeg, const us_frame_s *frame) {
++	// Semi-planar YUV: luma occupies its own plane, chroma is interleaved in a
++	// second plane (UVUV... or VUVU...).
++	//   NV12/NV21 = 4:2:0, chroma halved both horizontally and vertically
++	//   NV16      = 4:2:2, chroma halved horizontally only, so every luma row
++	//               has a matching chroma row
++	// https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/pixfmt-yuv-planar.html
++	//
++	// Performance note, measured on a BPI-W2: frame->data points at the V4L2
++	// mmap buffer, and on this SoC vb2-dma-contig hands back an **uncached**
++	// mapping. Every byte-sized access to that memory is a separate bus
++	// transaction. Reading y_row[x] / uv_row[uv] directly inside the per-pixel
++	// loop means over six million uncached reads for one 1080p frame, measured
++	// at 830 ms per frame (libjpeg itself accounts for only 80 ms of that).
++	//
++	// So each row's Y and UV are memcpy'd into ordinary (cached) buffers first
++	// -- memcpy reads uncached memory sequentially with wide instructions, and
++	// a whole 4 MB frame takes about 57 ms -- and the interleaving is then done
++	// out of cache.
++
++	const uint width = frame->width;
++	const bool subsample_v = (frame->format != V4L2_PIX_FMT_NV16);
++	const bool swapped_uv = (frame->format == V4L2_PIX_FMT_NV21);
++
++	// Derive the luma plane size from `used` rather than stride*height. Some
++	// capture hardware aligns the plane height too (1080 rounded up to 1088,
++	// for instance), and the chroma plane then does not start at stride*height
++	// -- hardcoding that would read from the wrong place.
++	const uz luma_size = (subsample_v
++		? (uz)frame->used * 2 / 3   // 4:2:0
++		: (uz)frame->used / 2);     // 4:2:2
++	const u8 *const luma = frame->data;
++	const u8 *const chroma = frame->data + luma_size;
++
++	// The luma plane's stride. us_frame_get_padding() cannot be trusted blindly:
++	// that helper was written for packed formats, and ustreamer always requests
++	// bytesperline = align(width, 32) * 2 at S_FMT time (a packed-YUV
++	// assumption). If the driver does not rewrite that field as V4L2 requires,
++	// the semi-planar Y stride comes out doubled: the top half of the picture
++	// is squashed to 2x height and the bottom half reads past the end of the
++	// chroma plane (first turning green, then running off the mmap and
++	// SIGSEGVing). Checking it against the plane size catches that.
++	uint stride = width + us_frame_get_padding(frame);
++	if (stride < width || (uz)stride * frame->height > luma_size) {
++		stride = width;
++	}
++
++	// Even with the right stride, a driver may still deliver a short frame.
++	// Rather than read memory that is not ours, fill anything unreadable with
++	// neutral grey.
++	const uz chroma_avail = (frame->used > luma_size ? frame->used - luma_size : 0);
++
++	u8 *line_buf;
++	u8 *y_line;
++	u8 *uv_line;
++	US_CALLOC(line_buf, width * 3);
++	US_CALLOC(y_line, width);
++	US_CALLOC(uv_line, width);
++
++	uint uv_cached = UINT_MAX; // for NV12/NV21 one chroma row serves two luma rows
++
++	while (jpeg->next_scanline < frame->height) {
++		const uint row = jpeg->next_scanline;
++		const uint uv_row_idx = (subsample_v ? (row >> 1) : row);
++		const uz y_off = (uz)stride * row;
++		const uz uv_off = (uz)stride * uv_row_idx;
++
++		if (y_off + width <= luma_size) {
++			memcpy(y_line, luma + y_off, width);
++		} else {
++			memset(y_line, 0, width);
++		}
++
++		if (uv_cached != uv_row_idx) {
++			if (uv_off + width <= chroma_avail) {
++				memcpy(uv_line, chroma + uv_off, width);
++			} else {
++				memset(uv_line, 128, width);
++			}
++			uv_cached = uv_row_idx;
++		}
++
++		u8 *ptr = line_buf;
++		if (swapped_uv) {
++			for (uint x = 0; x < width; ++x) {
++				const uint uv = (x & ~1U); // each UV pair serves two horizontal pixels
++				ptr[0] = y_line[x];
++				ptr[1] = uv_line[uv + 1];
++				ptr[2] = uv_line[uv];
++				ptr += 3;
++			}
++		} else {
++			for (uint x = 0; x < width; ++x) {
++				const uint uv = (x & ~1U);
++				ptr[0] = y_line[x];
++				ptr[1] = uv_line[uv];
++				ptr[2] = uv_line[uv + 1];
++				ptr += 3;
++			}
++		}
++
++		JSAMPROW scanlines[1] = {line_buf};
++		jpeg_write_scanlines(jpeg, scanlines, 1);
++	}
++
++	free(uv_line);
++	free(y_line);
++	free(line_buf);
++}
++
+ static void _jpeg_write_scanlines_grey(struct jpeg_compress_struct *jpeg, const us_frame_s *frame) {
+ 	u8 *line_buf;
+ 	US_CALLOC(line_buf, frame->width);

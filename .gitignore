@@ -1,0 +1,20 @@
+# Upstream sources (fetched by scripts/prepare-sources.sh)
+/vendor/
+# Build outputs and logs
+/build/
+/out/
+
+# Debug SSH keys -- must never be committed
+/.ssh/
+*.pem
+id_rsa
+id_ecdsa
+id_ed25519
+authorized_keys
+
+# BPI's official schematic is not distributed with the project;
+# see docs/refs/README.md for where to get it
+/docs/refs/*.pdf
+
+# A dump of somebody else's bootloader; see reference/README.md
+/reference/*.bin

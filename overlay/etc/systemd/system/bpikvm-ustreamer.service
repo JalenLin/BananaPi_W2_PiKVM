@@ -1,0 +1,24 @@
+[Unit]
+Description=BPI-W2 PiKVM video streamer (ustreamer)
+After=network.target
+# rtk_hdmirx is built in, so the device node already exists at boot. The
+# source may not be connected yet, but ustreamer retries on its own, so there
+# is nothing to wait for here.
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/bpikvm-ustreamer
+ExecStart=/usr/bin/ustreamer \
+    --device=${USTR_DEVICE} \
+    --format=${USTR_FORMAT} \
+    --resolution=${USTR_RESOLUTION} \
+    --desired-fps=${USTR_FPS} \
+    --quality=${USTR_QUALITY} \
+    --host=${USTR_HOST} \
+    --port=${USTR_PORT} \
+    --drop-same-frames=30
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

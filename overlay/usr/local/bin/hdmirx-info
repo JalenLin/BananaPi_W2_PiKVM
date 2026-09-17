@@ -1,0 +1,62 @@
+#!/bin/bash
+# Show the input state HDMI RX currently detects.
+#
+# Same data sources Android's tv_input HAL uses:
+#   /sys/devices/virtual/switch/rx_video/state
+#   /sys/class/video4linux/video250/hdmirx_video_info
+set -u
+
+# rtk_hdmirx asks for minor 250, but video_register_device() falls back to the
+# first free number when it cannot have it (video0 on real hardware). So
+# identify the device by the driver-specific sysfs attribute
+# hdmirx_video_info rather than hardcoding a node name.
+find_hdmirx() {
+    local d
+    for d in /sys/class/video4linux/video*; do
+        [ -e "$d/hdmirx_video_info" ] && { basename "$d"; return 0; }
+    done
+    return 1
+}
+
+VDEV_NAME="$(find_hdmirx || true)"
+if [ -z "$VDEV_NAME" ]; then
+    echo "No rtk_hdmirx v4l2 device found (no video* has hdmirx_video_info)"
+    echo "Things to check:"
+    echo "  1) dmesg | grep -i 'HDMI RX'"
+    echo "  2) whether hdmirx@98034000's status is okay in the DTB"
+    echo "  3) whether the kernel has CONFIG_RTK_HDMIRX=y"
+    exit 1
+fi
+VIDEO_DEV="/dev/$VDEV_NAME"
+SYS_V4L="/sys/class/video4linux/$VDEV_NAME"
+SWITCH=/sys/devices/virtual/switch/rx_video/state
+
+echo "== switch state =="
+if [ -r "$SWITCH" ]; then
+    printf "  rx_video/state = %s\n" "$(cat "$SWITCH")"
+else
+    echo "  ($SWITCH not present)"
+fi
+
+echo
+echo "== video info =="
+if [ -r "$SYS_V4L/hdmirx_video_info" ]; then
+    sed 's/^/  /' "$SYS_V4L/hdmirx_video_info"
+else
+    echo "  (no hdmirx_video_info)"
+fi
+
+echo
+echo "== audio info =="
+[ -r "$SYS_V4L/hdmirx_audio_info" ] && sed 's/^/  /' "$SYS_V4L/hdmirx_audio_info"
+
+echo
+echo "== buffer counts =="
+[ -r "$SYS_V4L/hdmirx_bufcnt" ] && sed 's/^/  /' "$SYS_V4L/hdmirx_bufcnt"
+
+echo
+echo "== V4L2 capabilities =="
+v4l2-ctl -d "$VIDEO_DEV" --info 2>&1 | sed 's/^/  /'
+echo
+echo "== supported formats =="
+v4l2-ctl -d "$VIDEO_DEV" --list-formats 2>&1 | sed 's/^/  /'

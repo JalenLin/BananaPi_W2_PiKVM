@@ -1,0 +1,47 @@
+defconfig: enable HDMI RX and the USB HID gadget
+
+The BSP's rtd129x_bpi_defconfig leaves both of these off:
+
+  CONFIG_RTK_HDMIRX          the V4L2 capture driver; the whole project
+                             depends on it
+  CONFIG_USB_CONFIGFS_F_HID  kvmd's otg HID (keyboard / mouse)
+
+During debugging we also enabled CONFIG_DEVMEM=y with STRICT_DEVMEM off, so
+tools/rdreg.py could read and write the pinmux and HDMI RX registers
+directly. **That setting is deliberately not kept here** -- a KVM sits on a
+management network and holds the console of somebody else's machine, so a
+shipping image should not leave an unrestricted /dev/mem behind.
+
+To make a debug build, layer this on top of this patch:
+
+  CONFIG_DEVMEM=y
+  # CONFIG_STRICT_DEVMEM is not set
+
+Routine pinmux verification does not need /dev/mem: whether the source
+negotiated 1080p60 (hdmirx-info's Width/Height/Fps) is sufficient proof that
+DDC works.
+
+---
+
+diff --git a/linux-rtk/arch/arm64/configs/rtd129x_bpi_defconfig b/linux-rtk/arch/arm64/configs/rtd129x_bpi_defconfig
+index 1103b93a7..d47446846 100644
+--- a/linux-rtk/arch/arm64/configs/rtd129x_bpi_defconfig
++++ b/linux-rtk/arch/arm64/configs/rtd129x_bpi_defconfig
+@@ -3090,7 +3090,7 @@ CONFIG_VIDEO_EM28XX_RC=m
+ CONFIG_RTK_HDMITX=y
+ # CONFIG_RTK_HDCP_1x is not set
+ # CONFIG_RTK_HDCP_1x_TEE is not set
+-# CONFIG_RTK_HDMIRX is not set
++CONFIG_RTK_HDMIRX=y
+ # CONFIG_RTK_HDCP1x_REPEATER is not set
+ # CONFIG_RTK_HDCPRX_1P4_TEE is not set
+ # CONFIG_RTK_HDCPRX_2P2 is not set
+@@ -4050,7 +4050,7 @@ CONFIG_USB_CONFIGFS_UEVENT=y
+ # CONFIG_USB_CONFIGFS_F_UAC1 is not set
+ # CONFIG_USB_CONFIGFS_F_UAC2 is not set
+ CONFIG_USB_CONFIGFS_F_MIDI=y
+-# CONFIG_USB_CONFIGFS_F_HID is not set
++CONFIG_USB_CONFIGFS_F_HID=y
+ # CONFIG_USB_CONFIGFS_F_UVC is not set
+ # CONFIG_USB_CONFIGFS_F_PRINTER is not set
+ # CONFIG_USB_LED_TRIG is not set

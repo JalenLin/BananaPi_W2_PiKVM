@@ -1,0 +1,15 @@
+# The BPI-W2's rtk_hdmirx only emits NV16 / NV12 / BGR32 -- nothing ustreamer
+# supports natively such as YUYV. NV16 is the smallest of them that does not
+# lose vertical chroma resolution.
+USTR_DEVICE=/dev/kvmd-video
+USTR_FORMAT=NV16
+
+# The resolution must match what the HDMI source actually outputs; check with
+# hdmirx-info. The EDID we serve prefers 1080p60, so normal negotiation lands
+# on this value.
+USTR_RESOLUTION=1920x1080
+
+USTR_FPS=30
+USTR_QUALITY=80
+USTR_HOST=0.0.0.0
+USTR_PORT=8080

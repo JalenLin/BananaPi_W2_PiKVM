@@ -1,0 +1,34 @@
+diff --git a/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi b/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
+index c536b34c2..3400b5ae1 100644
+--- a/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
++++ b/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
+@@ -142,10 +142,27 @@
+ 
+ 	hdmirx@98034000 {
+ 		compatible = "Realtek,rtk-mipi-top";
+-		status = "disabled";
++		status = "okay";
+ 
+ 		gpio-rx-hpd-ctrl = <&rtk_iso_gpio 22 1 0>;
+-		gpio-5v-detect = <&rtk_iso_gpio 22 0 0>;
++		/*
++		 * gpio-5v-detect removed.
++		 *
++		 * BPI had <&rtk_iso_gpio 22 0 0> here: the same pin as
++		 * gpio-rx-hpd-ctrl above (GPIO 22) but driven the opposite way
++		 * (HPD is an output, 5V detect an input). rx5v_do_task() calls
++		 * gpio_get_value(5v_det), reading back HPD's own driven level:
++		 *
++		 *   probe: Hdmi_SetHPD(0)   -> pin drives low
++		 *   poll : gpio_get_value() -> reads 0 -> "no source present"
++		 *          -> Hdmi_SetHPD(1) never runs
++		 *
++		 * A deadlock: the source never sees HPD and sends nothing, so
++		 * Status stays NotReady forever. No other board in the BSP has
++		 * this property (rtd-1296.dtsi), or it uses a different pin
++		 * (rtd-1295.dtsi uses GPIO 21). Without it the driver takes the
++		 * correct "Use cbus 5V detect" path.
++		 */
+ 	};
+ 
+ 	dptx@9803D000 {

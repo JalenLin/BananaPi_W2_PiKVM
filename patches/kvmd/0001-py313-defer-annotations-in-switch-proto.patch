@@ -1,0 +1,13 @@
+diff --git a/kvmd/apps/kvmd/switch/proto.py b/kvmd/apps/kvmd/switch/proto.py
+index b93d225..9bf1fab 100644
+--- a/kvmd/apps/kvmd/switch/proto.py
++++ b/kvmd/apps/kvmd/switch/proto.py
+@@ -20,6 +20,8 @@
+ # ========================================================================== #
+ 
+ 
++from __future__ import annotations
++
+ import struct
+ import dataclasses
+ 

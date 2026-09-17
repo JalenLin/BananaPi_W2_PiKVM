@@ -1,0 +1,7 @@
+# The equivalent of what upstream's kvmd-platform-<platform>-<board> package
+# installs. Purely informational -- it shows up on the Web UI's System page.
+# Without it, every system-info read raises
+# FileNotFoundError: '/usr/lib/kvmd/platform'.
+PIKVM_MODEL=bpi-w2
+PIKVM_VIDEO=hdmi
+PIKVM_BOARD=rtd1296

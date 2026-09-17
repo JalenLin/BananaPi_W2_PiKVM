@@ -1,0 +1,47 @@
+--- a/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
++++ b/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
+@@ -145,6 +145,44 @@
+ 		status = "okay";
+ 
+ 		gpio-rx-hpd-ctrl = <&rtk_iso_gpio 22 1 0>;
++
++		/*
++		 * Required for HDMI IN's DDC (EDID).
++		 *
++		 * Per page 6 of the bpi-w2-v1_1-pub schematic, pins 15/16 of the
++		 * HDMI IN connector (SCL/SDA) go through R81/R82 (0R) to the SoC's
++		 * I2C6_SCL / I2C6_SDA, i.e. ISO pad 20 and pad 26. The pinmux for
++		 * those two pads lives in bits [1:0] and [3:2] of ISO MUXPAD
++		 * 0x98007314, which resets to function 0 = gpio.
++		 *
++		 * The consequence: everything on the rtk_hdmirx side is configured
++		 * correctly (EDID SRAM contents right, DDC2_EDID_CR.edid_en=1, HPD
++		 * asserted), but the physical pins are not connected to the DDC
++		 * block at all. Every access the source makes to 0x50 is NAKed, so
++		 * it never obtains an EDID and falls back to its own default
++		 * resolution (1024x768). Switching to function 1 = i2c6 lets the
++		 * source read a complete 256-byte EDID and negotiate 1920x1080.
++		 *
++		 * Why attach this to this node rather than add it to pinctrl-0 of
++		 * pinctrl@9801A000: that pinctrl-0's "default" map has never
++		 * registered successfully on this board --
++		 *
++		 *   unsupported function sdio on pin sdio_clk
++		 *   pinctrl core: failed to register map default (10): invalid type given
++		 *
++		 * RTK_pctrl_dt_node_to_map() precomputes nmaps from the pin count,
++		 * but does not increment i when it skips an unsupported pin, and
++		 * still sets *num_maps = nmaps unconditionally. The trailing
++		 * entries are uninitialised kmalloc memory with a garbage type, so
++		 * the whole batch is rejected. As a result no DT pinmux has ever
++		 * been applied on this board and the pads are whatever the
++		 * bootloader left. Fixing num_maps would apply 17 other groups
++		 * (SD, RGMII, UART, ...) for the first time, which is too much
++		 * risk, so this instead lets the hdmirx device alone apply the one
++		 * group it needs through pinctrl_bind_pins().
++		 */
++		pinctrl-names = "default";
++		pinctrl-0 = <&i2c_pins_6>;
+ 		/*
+ 		 * gpio-5v-detect removed.
+ 		 *

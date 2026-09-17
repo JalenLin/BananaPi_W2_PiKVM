@@ -1,0 +1,15 @@
+# rtk_hdmirx asks for minor 250, but video_register_device() falls back to the
+# first free number when it cannot have it, so the node name must not be
+# hardcoded. Identify the device by the driver-specific sysfs attribute
+# hdmirx_video_info instead, and map it to /dev/kvmd-video as kvmd's config
+# expects.
+SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", \
+    TEST=="/sys/class/video4linux/%k/hdmirx_video_info", \
+    SYMLINK+="kvmd-video", GROUP="kvmd", MODE="0660"
+
+# USB gadget HID. kvmd's otg plugin opens these fixed names, mirroring
+# 99-kvmd.rules from upstream's platform package. This board only has
+# hidg0/hidg1 (keyboard + mouse) and no hidg2 -- dwc3 does not have enough IN
+# endpoints; see /usr/lib/kvmd/main.yaml.
+KERNEL=="hidg0", GROUP="kvmd", SYMLINK+="kvmd-hid-keyboard"
+KERNEL=="hidg1", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse"

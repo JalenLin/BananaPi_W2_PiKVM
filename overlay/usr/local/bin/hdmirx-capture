@@ -1,0 +1,79 @@
+#!/bin/bash
+# Capture HDMI RX frames following Android's tv_input HAL flow.
+#
+# The key step is reading the timings the hardware actually detected out of
+# sysfs first, then issuing S_FMT at those dimensions. Skipping that and just
+# running a generic v4l2 tool is exactly why this only produced 720p30 at
+# first.
+#
+#   usage: hdmirx-capture [frames] [pixelformat] [outfile]
+set -euo pipefail
+
+FRAMES="${1:-30}"
+PIXFMT="${2:-NV16}"
+OUTPUT="${3:-/tmp/hdmirx.raw}"
+
+# rtk_hdmirx asks for minor 250, but video_register_device() falls back to the
+# first free number when it cannot have it (video0 on real hardware). So
+# identify the device by the driver-specific sysfs attribute
+# hdmirx_video_info rather than hardcoding a node name.
+find_hdmirx() {
+    local d
+    for d in /sys/class/video4linux/video*; do
+        [ -e "$d/hdmirx_video_info" ] && { basename "$d"; return 0; }
+    done
+    return 1
+}
+
+VDEV_NAME="$(find_hdmirx || true)"
+if [ -z "$VDEV_NAME" ]; then
+    echo "No rtk_hdmirx v4l2 device found (no video* has hdmirx_video_info)"
+    echo "Things to check:"
+    echo "  1) dmesg | grep -i 'HDMI RX'"
+    echo "  2) whether hdmirx@98034000's status is okay in the DTB"
+    echo "  3) whether the kernel has CONFIG_RTK_HDMIRX=y"
+    exit 1
+fi
+VIDEO_DEV="/dev/$VDEV_NAME"
+SYS_V4L="/sys/class/video4linux/$VDEV_NAME"
+SWITCH=/sys/devices/virtual/switch/rx_video/state
+
+INFO="$SYS_V4L/hdmirx_video_info"
+
+get() { sed -n "s/^$1://p" "$INFO" | tr -d ' \r'; }
+
+STATUS=$(get Status)
+WIDTH=$(get Width)
+HEIGHT=$(get Height)
+FPS=$(get Fps)
+SCAN=$(get ScanMode)
+COLOR=$(get Color)
+
+echo "detected input: ${WIDTH}x${HEIGHT} ${SCAN} ${FPS}fps  Color:${COLOR}  Status:${STATUS}"
+
+if [ "$STATUS" != "Ready" ]; then
+    echo "Signal not ready -- check that the source is actually outputting."
+    exit 1
+fi
+if [ -z "$WIDTH" ] || [ "$WIDTH" = "0" ]; then
+    echo "Could not read the geometry; the signal may be unstable."
+    exit 1
+fi
+
+echo "setting the format to the detected size and capturing ${FRAMES} frames -> $OUTPUT"
+v4l2-ctl -d "$VIDEO_DEV" \
+    --set-fmt-video="width=${WIDTH},height=${HEIGHT},pixelformat=${PIXFMT}" \
+    --stream-mmap \
+    --stream-count="${FRAMES}" \
+    --stream-to="${OUTPUT}"
+
+echo
+echo "done: $(ls -lh "$OUTPUT" | awk '{print $5}')  ($(( $(stat -c%s "$OUTPUT") / FRAMES )) bytes per frame)"
+echo
+echo "To view the first frame as a PNG (needs ffmpeg, which this image does not ship):"
+case "$PIXFMT" in
+  NV16) FF=nv16 ;;
+  NV12) FF=nv12 ;;
+  *)    FF=nv16 ;;
+esac
+echo "  ffmpeg -f rawvideo -pix_fmt $FF -s ${WIDTH}x${HEIGHT} -i $OUTPUT -frames:v 1 /tmp/frame.png"

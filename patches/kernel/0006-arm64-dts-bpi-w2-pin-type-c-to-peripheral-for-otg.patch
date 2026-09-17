@@ -1,0 +1,33 @@
+--- a/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
++++ b/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-common.dtsi
+@@ -453,3 +453,30 @@
+ 	};
+ };
+ 
++
++/*
++ * USB OTG: pin the Type-C port to peripheral (device) mode.
++ *
++ * PiKVM's hid/msd use a USB gadget, which needs a UDC. The BSP's
++ * rtd-1296-usb.dtsi already sets dwc3_drd@98020000 to
++ * dr_mode = "peripheral", but it also puts drd_mode on
++ * rtk_dwc3_drd_type_c@0, so dwc3-rtk-type_c picks the role from the CC pins:
++ *
++ *   [    6.5] dwc3_drd_to_device END....          <- starts as device
++ *   [   38.0] switch_dwc3_mode dr_mode=USB_DR_MODE_HOST
++ *   [   38.3] dwc3_drd_to_host END....            <- then switched to host
++ *
++ * The result: /sys/class/udc/ is empty and kvmd-otg cannot start.
++ *
++ * With drd_mode removed, switch_dwc3_mode() in the type_c driver takes
++ *   if (!type_c->is_drd_mode) dr_mode = type_c->dwc3_mode;
++ * i.e. always the peripheral mode from the DTS, and the UDC registers.
++ *
++ * The cost: the Type-C port can no longer be a USB host. For a KVM it
++ * should go to the target anyway; power comes in via the DC jack.
++ */
++&dwc3_drd {
++	rtk_dwc3_drd_type_c@0 {
++		/delete-property/ drd_mode;
++	};
++};

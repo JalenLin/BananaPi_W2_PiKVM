@@ -1,0 +1,20 @@
+  BPI-W2 PiKVM
+  ────────────────────────────────────────────────
+  kernel  4.9.119-BPI-W2-Kernel (BSP + HDMI RX)
+  rootfs  Debian 13 (trixie) arm64
+
+  Web UI    https://<this board's IP>/   admin / admin
+  Console   root / pikvm
+
+  ** Change both default passwords before real use **
+    kvmd-htpasswd set admin
+    passwd
+
+  Handy commands:
+    hdmirx-info                 detected input timings and V4L2 caps
+    hdmirx-capture 30 NV16      grab 30 frames to /tmp/hdmirx.raw
+    systemctl status kvmd kvmd-nginx
+
+  USB HID (keyboard + mouse) is enabled -- connect the board's Type-C
+  port to the target machine.
+  MSD (virtual media) and ATX are not enabled.

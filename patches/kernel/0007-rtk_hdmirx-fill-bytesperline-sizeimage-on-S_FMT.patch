@@ -1,0 +1,46 @@
+S_FMT must write the accepted format back to userspace
+
+VIDIOC_S_FMT is _IOWR, so the driver is obliged to rewrite struct
+v4l2_format. The original handler only read the caller's
+width/height/pixelformat into dev and mipi_top and never touched
+bytesperline / sizeimage, so whatever the caller passed in came straight
+back out.
+
+ustreamer's _capture_open_format() always fills in
+bytesperline = us_align_size(width, 32) << 1 (a packed-YUV assumption), so
+when capturing NV16 it believes the Y plane stride is 3840 rather than 1920:
+
+  - the top half of the picture is squashed to 2x height (every row skips one)
+  - by row 540 the chroma pointer has run past the end of the chroma plane
+    and reads the zero padding -> solid green
+  - further down it reads past the mmap -> SIGSEGV, and kvmd restarts the
+    streamer every 3 seconds
+
+G_FMT / TRY_FMT already go through fill_pix_format(); S_FMT should match.
+
+---
+
+--- a/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.c
++++ b/linux-rtk/drivers/media/platform/rtk_hdmirx/rtd129x/hdmirx_video_dev.c
+@@ -491,6 +491,21 @@
+ 		HDMIRX_INFO(" ioctl VIDIOC_S_FMT,output v(%u) h(%u) color(%u) pitch(%u)",
+ 			mipi_top.h_output_len, mipi_top.v_output_len,
+ 			mipi_top.output_color, mipi_top.pitch);
++
++		/*
++		 * VIDIOC_S_FMT is _IOWR: the driver must write back the format it
++		 * accepted. This handler only read, so the caller's bytesperline /
++		 * sizeimage came back unchanged.
++		 *
++		 * ustreamer always fills bytesperline = align(width,32) * 2 (a
++		 * packed-YUV assumption), so it believes NV16's Y stride is 3840
++		 * rather than 1920: the top half is squashed to 2x height, the
++		 * bottom turns green past the chroma plane, then it SIGSEGVs.
++		 *
++		 * G_FMT / TRY_FMT already use fill_pix_format(); S_FMT should match.
++		 */
++		fill_pix_format(&fmt->fmt.pix, mipi_top.h_output_len,
++				mipi_top.v_output_len, dev->outfmt);
+ 		break;
+ 	}
+ 	case VIDIOC_S_PARM:
