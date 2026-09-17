@@ -1252,12 +1252,18 @@ Built in (`=y`), so it cannot be lifted out as a module — and the kernel is
 4.1.35, not 4.9.119, so nothing from it loads into ours regardless.
 
 Its kernel `.config` can be recovered, and is the authoritative answer to
-"what would we have to turn on". `.build_config` names the router profile as `CONFIG_OPENWRT_CONFIG ott`,
-and that profile is the one thing here that is *not* public: the repo ships
-only NAS configs (`config-4.1`, `nas_emmc/`, `mnas_emmc/`, `gmnas_emmc/`,
-`nas_spi/` — all with `# CONFIG_RTD_1295_HWNAT is not set`) and no `ott/`.
-The shipped image carries `CONFIG_IKCONFIG`, though, so the config can be
-read straight out of it:
+"what would we have to turn on".
+
+> **Second correction, same day.** A first pass at this paragraph said the
+> router profile was "the one thing here that is not public". Wrong again,
+> and by the same mechanism as the first time: the search was
+> `git ls-tree | grep 'Openwrt/target/linux/rtd129x/config'`, a pattern that
+> cannot match a file at `Openwrt/`'s top level. Both profiles are public.
+> Twice in one afternoon, a narrow search was mistaken for an absent file.
+
+The shipped image carries `CONFIG_IKCONFIG`, so the config can be read
+straight out of it — useful as a cross-check, and the method is worth
+knowing regardless:
 
 ```sh
 unzip -j 2020-07-23-bpi-w2-android7-router.img.zip
@@ -1281,6 +1287,50 @@ CONFIG_RTL_PPPOE_HWACC=y             CONFIG_RTD_1295_MAC0_SGMII_LINK_MON=y
 (That config is not committed here, for the same reason the schematic PDF
 and the reference bootloader dump are not: it is vendor output, and the two
 commands above regenerate it.)
+
+### The router build is fully reproducible from public source
+
+This is the part that matters if anyone wants to *use* hwnat rather than
+port it. `BPI-1296-Android7` contains not just the kernel but the whole
+OpenWrt buildroot — 62,179 files under `Openwrt/` — including both board
+profiles at the top level:
+
+```
+Openwrt/bananapi-ott_defconfig        533 lines   (the default: media box)
+Openwrt/bananapi-router_defconfig     518 lines   (the router)
+Openwrt/.config.bananapi-router      5744 lines   (its expanded .config)
+```
+
+`build_openwrt.sh` selects between them with one line:
+
+```sh
+cat ${IMAGE_TARGET_BOARD}-${OPENWRT_CONFIG}_defconfig > .config
+```
+
+driven by `.build_config`'s `CONFIG_OPENWRT_CONFIG`, which ships as `ott`.
+Changing that one word to `router` is the whole difference. The `defconfig`
+diff is small and entirely legible:
+
+```
++ CONFIG_PACKAGE_kmod-rtd1295hwnat=y     <- the NAT engine
++ CONFIG_PACKAGE_dnsmasq, firewall       <- it is a router now
++ CONFIG_PACKAGE_kmod-mac80211, kmod-rtkwifiu-*
+- CONFIG_PACKAGE_kmod-ottrtl88*          <- the media-box wifi drivers
+- CONFIG_PACKAGE_forked-daapd
+```
+
+`kmod-rtd1295hwnat` is an OpenWrt package in name only —
+`target/linux/rtd1295/modules.mk` gives it `FILES:=` and `AUTOLOAD:=` empty
+and a `KCONFIG:=` list of 46 symbols, all `=y`. It is a config-flipping
+wrapper around a built-in driver, which is why nothing in the shipped image
+is loadable. That also explains the split cleanly: the `net/` hooks are
+compiled into vmlinux and the 267k-line engine sits behind them, so even as
+"a module" it could never have been separable from the patched stack.
+
+So the vendor's router is not a mystery and not a binary-only artifact. It
+is buildable today, from public source, on the vendor's own toolchain. What
+it is *not* is portable — see the four sections above. Those are different
+claims, and only the second one is bad news.
 
 ### Revised assessment
 
