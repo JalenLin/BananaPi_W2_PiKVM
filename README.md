@@ -179,7 +179,9 @@ build/          build outputs
 - The SD card slot makes poor contact; occasionally the card is not detected.
 - **Only one of the two Ethernet sockets works.** The second one is an
   RTL8211F on RGMII0 belonging to the hwnat block, whose DT node is disabled
-  and whose driver exists in no public BSP. See §11 of
+  and for which no 4.9 kernel has a driver. Realtek's driver is public, but
+  only for kernel 4.1.35, and it is a 267k-line fork of the network stack
+  that replaces the working port rather than adding to it. See §11 of
   `docs/06-changes.md`.
 - **Capture buffers are mapped uncached.** Anything that touches the V4L2
   mmap buffer must `memcpy` it out before working on it. Reading it byte by

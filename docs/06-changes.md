@@ -779,7 +779,7 @@ changed.
 | LK's `usb start` often fails the first time | `lk-boot-usb.sh` always issues it twice |
 | The DT pinmux default state has never taken effect | The `*num_maps` bug in the pinctrl driver (see patch 0005). Pin configuration currently relies entirely on the bootloader; we only apply the one group hdmirx needs |
 | Default credentials | Web UI `admin`/`admin`, SSH `root`/`pikvm`. Deliberately left at the defaults — an image should let the user change them (`kvmd-htpasswd set admin`, `passwd`) |
-| **The second Ethernet port does not work** | It is not a PCIe NIC. It is an RTL8211F on RGMII0, belonging to the hwnat block (`gmac@98060000`), whose DT node is disabled and whose driver does not exist in any public BSP. Full analysis in §11 |
+| **The second Ethernet port does not work** | It is not a PCIe NIC. It is an RTL8211F on RGMII0, belonging to the hwnat block (`gmac@98060000`), whose DT node is disabled and which has no driver in any 4.9 BSP. A 4.1.35 driver is public but is a 267k-line fork of `net/`; full analysis in §11 |
 | The image contains no SSH credentials | `build-rootfs.sh` asserts this: if `authorized_keys` / `ssh_host_*_key` / `id_*` appears anywhere in the rootfs, the build fails outright. An `authorized_keys` would make every flashed card accept the same private key (a backdoor), and pre-generated host keys would make every card share one host identity |
 
 ---
@@ -1023,11 +1023,14 @@ and the board file that actually takes effect,
 `rtd-1296-bananapi-w2-2GB.dts`, overrides `nic`, `pcie@9804E000`,
 `pcie2@9803B000` and `sdmmc` but never mentions `hwnat`.
 
-**The driver does not exist.** Searching the whole BSP for `hwnat` — in
-`*.c`, `*.h`, `Kconfig` and `Makefile` — returns nothing.
+**Our kernel has no driver for it.** Searching the whole BSP 4.9 tree for
+`hwnat` — in `*.c`, `*.h`, `Kconfig` and `Makefile` — returns nothing.
 `drivers/net/ethernet/realtek/` contains only `8139*`, `atp`, `r8125`,
 `r8168`, `r8169.c` and `r8169soc.c`. So `status = "disabled"` is not an
 oversight: there is nothing for that node to bind to.
+
+A driver does exist, in a different kernel — see "Where the driver actually
+lives" below. It is public, it is 267k lines, and it is unusable here.
 
 u-boot hints at the same thing during boot:
 
@@ -1037,60 +1040,290 @@ Unable to update property /gmac@0x98060000:local-mac-address, err=FDT_ERR_NOTFOU
 
 ### Where the driver actually lives
 
+> **Correction (2026-09-17, later the same day).** An earlier revision of
+> this section said the hwnat driver "was never published" and that "not
+> even register definitions exist". Both claims were wrong. The driver is
+> public, with full register headers. What follows replaces them.
+>
+> The mistake was cheap to make and worth naming: `vendor/bpi-1296-android7`
+> is cloned with `--filter=blob:none` and a sparse checkout limited to
+> `android/`. Searching the *working tree* therefore found nothing, and that
+> was read as "not in the repo". Searching the *git tree* tells a different
+> story. When a clone is sparse, `git ls-tree -r HEAD --name-only` is the
+> only honest way to ask what a repository contains.
+
 `vendor/bpi-1296-android7/.build_config`:
 
 ```
 CONFIG_TARGET_BUILD_TYPE   openwrt      <- this board ships as a router
-CONFIG_GIT_SERVER_URL      rsgerrit     <- Realtek's internal Gerrit
 CONFIG_IMAGE_TARGET_BOARD  bananapi
 ```
 
 and `build_prepare.sh`:
 
 ```
-OPENWRTDIR       = $SCRIPTDIR/Openwrt          <- not present in the repo
+OPENWRTDIR       = $SCRIPTDIR/Openwrt
 OPENWRTKERNELDIR = $OPENWRTDIR/linux-4.1.7     <- a second kernel
 ```
 
 The RTD129x ships as an **Android + OpenWrt dual system**: Android runs the
-4.9 kernel we use, while OpenWrt runs a separate 4.1.x kernel. Community
-work on other RTD129x devices corroborates this (RTD1295/X9S on Linux
-4.1.17, RTD1296/Z9S on 4.1.35). The router features -- hwnat, the second
-MAC, the switch -- live in that 4.1.x tree, which is pulled from Realtek's
-internal Gerrit and was never published.
+4.9 kernel this project uses, while the router side runs a separate 4.1.x
+kernel. `Openwrt/linux-4.1.7/` is a complete kernel source tree — 51,800
+files — and despite the directory name its `Makefile` says `SUBLEVEL = 35`,
+matching the shipped router image exactly:
 
-BPI's wiki matches: the image described as "router mode android image with
-hwnat and openwrt enabled" is a **kernel 4.1** image, and the Android 6.0
-image is documented as "without second ethernet port enabled".
+```
+Linux version 4.1.35-04005-g6c2818e-dirty (dangku@dangku-desktop)
+  (gcc version 4.9.4 (OpenWrt/Linaro GCC 4.9-2015.06 r48422)) #1 SMP PREEMPT
+```
 
-Cross-checked against three public BPI-W2 BSP trees -- the official one,
-`jjm2473/BPI-W2-bsp-tmp` (by someone who ports OpenWrt to RTD129x) and
-`minhng99/BPI-W2-bsp-4.4_public`. None contains hwnat, and jjm2473's fork
-still has the node disabled: that port reuses the vendor's 4.1.x kernel and
-only replaces the OpenWrt userspace, sidestepping the problem rather than
-solving it.
+The driver is at:
 
-### Would a prebuilt image help?
+```
+Openwrt/linux-4.1.7/drivers/soc/realtek/rtd129x/hw_nat/
+```
 
-Only the kernel-4.9 "OpenWrt LEDE" image is even the right major.minor. Even
-then:
+To fetch it from an existing sparse clone:
 
-- if hwnat is built in (`=y`), it is linked into vmlinux and cannot be
-  extracted into another kernel build
-- if it is a module, `vermagic` must match ours exactly
-  (`4.9.119-BPI-W2-Kernel SMP preempt mod_unload aarch64`), and every symbol
-  it imports must be exported by our kernel
-- and it would still need the DT node enabled plus whatever clock, reset and
-  power domain the block wants -- compare §10, where the JPU returned
-  `0xdeadbeef` even with its clock enabled and reset released, because a
-  power domain was still missing
+```sh
+cd vendor/bpi-1296-android7
+git sparse-checkout add Openwrt/linux-4.1.7/drivers/soc/realtek/rtd129x/hw_nat
+```
 
-Booting their kernel instead is not an option: that discards every HDMI RX
-patch this project depends on.
+The board's own DTS is in the same tree
+(`arch/arm64/boot/dts/realtek/rtd-1296-bananapi-2GB.dts`) and has the node
+disabled there too. The router build flips it with a patch whose filename is
+the whole argument of this section:
 
-### The theoretical alternative, and why it is not useful here
+```
+Openwrt/target/linux/rtd1295/dts/patches/001-Enable-router-mac-but-disable-umac.patch
+```
 
-`r8169soc.c` can drive an external RGMII PHY:
+```dts
+nic: gmac@98016000 {          hwnat: gmac@0x98060000 {
+    status = "disabled";          mac0_enable = <0>;
+};                                status = "okay";
+                              };
+```
+
+One is turned off to turn the other on. That is the vendor's own build
+system saying the two MACs are alternatives, not additions.
+
+### What the driver actually is
+
+It is not an Ethernet driver. It is Realtek's **RTL819x / RTL8197F home
+router SDK**, the codebase from their MIPS router SoCs, transplanted whole
+into `drivers/soc/`:
+
+| | |
+|---|---|
+| Files under `hw_nat/` | 223 |
+| Lines of C and headers | **267,322** |
+| `rtl_nic.c` alone | 28,439 lines |
+| Distinct `rtl865x_*` / `rtl_ps_*` symbols `rtl_nic.c` touches | 263 |
+| Subtrees | `AsicDriver/` (53k), `rtl836x/` (92k), `igmpsnooping/` (14k), `l3Driver/` (13k), `common/` (12k), `l2Driver/` (7k), `l4Driver/` (2k) |
+
+Traces of its origin are still in the source. `rtl_nic.c` opens with
+
+```c
+#if !defined(CONFIG_RTD_1295_HWNAT)
+#elif defined(CONFIG_SOC_RTL8197F) && defined(CONFIG_OPENWRT_SDK)
+#include <asm/mach-rtl8197f/bspchip.h>     /* a MIPS header */
+#endif
+```
+
+and, more tellingly:
+
+```c
+#include <../net/bridge/br_private.h>
+```
+
+A driver that reaches into `net/bridge/`'s private header is not a driver
+that can be built out of tree, or dropped into a kernel whose bridge code
+has not been patched to match.
+
+### It is a fork of the network stack, not a driver
+
+This is the part that decides the whole question. The 4.1.35 tree carries
+**2,308 `CONFIG_RTL_*` conditionals spread across 94 core networking
+files**, plus an entire `net/rtl/` subtree that does not exist upstream:
+
+| Where | Files touched |
+|---|---|
+| `net/` | 53 |
+| `include/` | 41 |
+| New: `net/rtl/` + `include/net/rtl/` | ~8,800 LOC, 1.1 MB |
+
+The heaviest intrusions, by number of `CONFIG_RTL` references:
+
+```
+net/rtl/features/rtl_ps_hooks.c     335      net/core/skbuff.c                62
+net/rtl/features/rtl_features.c     321      net/netfilter/nf_conntrack_core.c 51
+net/bridge/br.c                     141      net/ipv4/netfilter/ip_tables.c   51
+net/bridge/br_input.c               111      net/bridge/br_multicast.c        42
+net/bridge/br_device.c              111      net/bridge/br_if.c               40
+net/bridge/br_forward.c             104
+```
+
+The hook symbols left in the shipped binary say the same thing plainly:
+
+```
+rtl_ip_tables_init_hooks     rtl_nf_nat_packet_hooks    rtl_translate_table_hooks
+rtl_masq_device_event_hooks  rtl_ip_vs_conn_expire_hooks1/2
+rtl_nat_init_hooks           rtl_nat_cleanup_hooks      gHwNatEnabled
+```
+
+Those are patched into `ip_tables.c`, `nf_nat_core.c`, `nf_conntrack_core.c`
+and IPVS. The BSP 4.9 tree this project builds from has **zero** of them:
+
+```
+$ grep -rl 'CONFIG_RTL_' net/ include/ | wc -l
+0
+```
+
+So "port hwnat" does not mean "add a driver". It means forking `net/bridge`,
+`net/ipv4`, `net/netfilter` and `net/core` across an eight-year version gap
+(4.1 → 4.9, and far worse for mainline 6.x, where the netfilter and bridge
+internals these hooks attach to have been rewritten repeatedly).
+
+### There is no minimal subset
+
+The obvious escape — take just the MAC driver, run the two ports as dumb
+NICs, skip the NAT offload — does not survive contact with the source.
+`rtl_nic.c` includes the L2 FDB driver, the L3 route/ARP/nexthop drivers,
+the NAT tables and the VLAN manager, and calls 263 symbols from them. The
+network device and the offload engine are the same program.
+
+The DT also shows the two ports are not additive. In the shipped router
+image's `android.emmc.dtb`, hwnat and the working NIC are **mutually
+exclusive**:
+
+```dts
+gmac@0x98060000 {            gmac@98016000 {
+    compatible = "Realtek,rtd1295-hwnat";   compatible = "Realtek,r8168";
+    offload_enable = <0x1>;                 status = "disabled";   /* <- */
+    rgmii_enable   = <0x1>;             };
+    mac0_enable    = <0x0>;
+    status = "okay";
+};
+```
+
+hwnat does not add a second interface alongside `eth0`; it **replaces** the
+networking stack and then presents `eth0` (WAN) and `eth1` (LAN) itself.
+The router rootfs confirms it — `/etc/config/network` binds `wan` to `eth0`
+and `lan` to `eth1 veth1`. Adopting it is not a gain of one port; it is a
+swap of the entire network subsystem, including the port that works today.
+
+### What the two prebuilt images from the BPI wiki actually contain
+
+Both were downloaded and unpacked (`refer_images/`, gitignored). Neither is
+a shortcut.
+
+**`bpi-w2-openwrt-lede` (kernel 4.9)** — the only image at our kernel
+version (`Linux version 4.9.119 (mikey@bpi-iot-ros-ai-x64) ... OpenWrt GCC
+8.2.0`). It is the **NAS** build, not the router build:
+
+```
+$ dtc -I dtb -O dts normal.dtb.padding | grep -A2 'gmac@98060000'
+    compatible = "Realtek,rtd1295-hwnat";
+    status = "disabled";                    <- and r8168 is "okay"
+
+$ strings -a Image.padding | grep -i hwnat
+(nothing)
+```
+
+Not a module either — its 91 `.ko` files contain no hwnat, and no string in
+the kernel image mentions it. The driver is simply not built. This is the
+clearest possible answer to "would a prebuilt image help": the one image at
+the right kernel version does not contain the thing.
+
+**`2020-07-23-bpi-w2-android7-router` (kernel 4.1.35)** — this one *does*
+have it, built in:
+
+```
+$ strings -a omv/emmc.uImage | grep -i hwnat
+Realtek,rtd1295-hwnat
+HWNAT MMIO : no NAT mmio space
+drivers/soc/realtek/rtd129x/hw_nat/rtl819x_swNic.c
+gHwNatEnabled / rtl_hwnat_enable
+```
+
+Built in (`=y`), so it cannot be lifted out as a module — and the kernel is
+4.1.35, not 4.9.119, so nothing from it loads into ours regardless.
+
+Its kernel `.config` can be recovered, and is the authoritative answer to
+"what would we have to turn on". `.build_config` names the router profile as `CONFIG_OPENWRT_CONFIG ott`,
+and that profile is the one thing here that is *not* public: the repo ships
+only NAS configs (`config-4.1`, `nas_emmc/`, `mnas_emmc/`, `gmnas_emmc/`,
+`nas_spi/` — all with `# CONFIG_RTD_1295_HWNAT is not set`) and no `ott/`.
+The shipped image carries `CONFIG_IKCONFIG`, though, so the config can be
+read straight out of it:
+
+```sh
+unzip -j 2020-07-23-bpi-w2-android7-router.img.zip
+tar xf 2020-07-23-bpi-w2-android7-router.img omv/emmc.uImage
+vendor/bpi-w2-bsp/linux-rtk/scripts/extract-ikconfig omv/emmc.uImage \
+    > rtd1296-android-router-4.1.35.config
+```
+
+which yields 25 `CONFIG_RTL_*` options on top of `CONFIG_RTD_1295_HWNAT=y`:
+
+```
+CONFIG_RTD_1295_HWNAT=y              CONFIG_RTL_LAYERED_DRIVER_L2/L3/L4=y
+CONFIG_RTL_819X=y                    CONFIG_RTL_LAYERED_ASIC_DRIVER_L3/L4=y
+CONFIG_RTL_8197F=y                   CONFIG_RTL_HW_NAPT=y
+CONFIG_RTL_819X_SWCORE=y             CONFIG_RTL_HARDWARE_NAT=y
+CONFIG_RTL_PPPOE_HWACC=y             CONFIG_RTD_1295_MAC0_SGMII_LINK_MON=y
+# CONFIG_RTL_8211F_SUPPORT is not set (the PHY is driven by the switch core,
+#                                      not by the standalone 8211F path)
+```
+
+(That config is not committed here, for the same reason the schematic PDF
+and the reference bootloader dump are not: it is vendor output, and the two
+commands above regenerate it.)
+
+### Revised assessment
+
+The earlier verdict ("not tractable — the driver does not exist") was right
+about the outcome and wrong about the reason. The corrected picture:
+
+| | Earlier claim | Actual |
+|---|---|---|
+| Source availability | never published | **public**, `BPI-1296-Android7`, `Openwrt/linux-4.1.7/` |
+| Register definitions | none exist | **full headers**: `asicRegs.h`, `rtl865xc_asicregs.h`, `sb2_reg.h`, `iso_reg.h`, … |
+| Kernel driver | none at all | 223 files, 267k LOC, plus 94 patched core files |
+| Why it is hard | nothing to work from | **too much** to work from, and none of it is separable |
+
+The difficulty moved from "black box" to "forking the network stack across
+eight kernel versions". That is a worse problem than the one described
+before, not a better one: an undocumented register window can be reverse
+engineered incrementally with a logic analyser and patience, whereas a
+267k-line vendor fork of `net/` has to be carried forward wholesale, forever,
+against a subsystem that upstream rewrites regularly.
+
+### The pattern
+
+This is the same shape as the hardware encoders in §10, and the corrected
+comparison is sharper than the original:
+
+| | Codec (VE1 / JPU) | hwnat (second NIC) |
+|---|---|---|
+| Hardware | present | present (RTL8211F on RGMII0) |
+| DT node | `status=okay`, probes | `status=disabled` |
+| Kernel driver in BSP 4.9 | yes (device interface only) | none |
+| Source available elsewhere | firmware blob only, no source | **full source**, kernel 4.1.35 |
+| What is missing | the userspace `vpuapi` implementation | nothing is missing — it is **unusable at our kernel version** |
+| Cost to adopt | reverse engineer a documented-ish register set | carry a fork of `net/` across 4.1 → 4.9 → 6.x |
+| Cost if we succeed | 1080p H.264 in hardware | one extra RJ45, at the price of the stack |
+
+§10 is the better investment of the two by a wide margin, and it is not
+close: the codec work buys a real capability for this project, while hwnat
+buys a port a KVM does not need.
+
+### The alternative that does not need hwnat at all
+
+`r8169soc.c` — the driver already in our kernel — can drive an external
+RGMII PHY:
 
 ```c
 enum rtl_output_mode {
@@ -1102,27 +1335,16 @@ enum rtl_output_mode {
 #define ISO_RGMII_MDIO_TO_GMAC  0x98007064
 ```
 
-So the working MAC could in principle be switched to RGMII0 and drive the
-RTL8211F (`output-mode = <2>` plus `ext-phy-id`). But that is **either/or**,
-not both: one MAC can only serve one PHY. You would trade the working socket
-for the dead one, which gains a KVM nothing. It would also need the DT
-pinmux to work, and on this board it never has (see `04-hdmi-rx-bringup.md`).
+So the working MAC could in principle be pointed at RGMII0 and made to drive
+the RTL8211F (`output-mode = <2>` plus `ext-phy-id`), with no hwnat and no
+patched network stack. But it is **either/or**: one MAC serves one PHY. You
+would trade the working socket for the dead one, which gains a KVM nothing.
+It would also need the DT pinmux to take effect, and on this board that has
+never worked (see "Blocker 2" in `04-hdmi-rx-bringup.md`).
 
-### The pattern
+It is recorded because it is the only path to that socket that does not
+involve forking `net/` — worth knowing if someone ever wants the RGMII port
+specifically, rather than a second port.
 
-This is the same shape as the hardware encoders in §10:
-
-| | Codec (VE1 / JPU) | hwnat (second NIC) |
-|---|---|---|
-| Hardware | present | present (RTL8211F on RGMII0) |
-| DT node | `status=okay`, probes | `status=disabled` |
-| Kernel driver | **yes** (device interface only) | **none at all** |
-| What is missing | the userspace implementation (blob found in the Android tree) | **the entire driver**, in Realtek's internal 4.1.x tree |
-| Tractability | register definitions exist and can be worked from | not even register definitions exist |
-
-hwnat is the harder of the two: §10 at least has 149 headers of register
-definitions to work from, whereas `gmac@98060000`'s 0x170000-byte register
-window is a complete black box.
-
-**None of this is a blocker for PiKVM** -- one network port is all a KVM
+**None of this is a blocker for PiKVM** — one network port is all a KVM
 needs. It is recorded here so nobody has to re-derive it.
