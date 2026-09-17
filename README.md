@@ -195,6 +195,19 @@ build/          build outputs
 - The serial console gets flooded by the Realtek audio driver's
   `[AO][_AO_if_video_HDMI_mode]HDMI not enabled`. `dmesg -n 1` quiets it.
 
+## Branches
+
+| Ref | What it is |
+|-----|------------|
+| `main` | The BSP 4.9.119 line. This is the working deliverable and what the documentation describes |
+| `v1.0-bsp4.9` (tag) | An immutable snapshot of the verified BSP 4.9 state |
+| `mainline` | Research towards a mainline/LTS kernel. Diverges heavily and is not expected to be usable until it reaches M5 in `docs/08-kernel-uplift.md` |
+
+The two kernel lines are kept apart deliberately. `main` stays functional
+while `mainline` is worked on, and until that work passes M5 (HDMI capture)
+switching to it would be a functional regression -- see section 7 of
+`docs/08-kernel-uplift.md`.
+
 ## Licensing and upstreams
 
 - Kernel: [BPI-SINOVOIP/BPI-W2-bsp](https://github.com/BPI-SINOVOIP/BPI-W2-bsp) (GPL-2.0)
