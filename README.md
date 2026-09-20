@@ -206,7 +206,7 @@ build/          build outputs
 | `main` | The BSP 4.9.119 line. This is the working deliverable and what the documentation describes |
 | `v1.0-bsp4.9` (tag) | An immutable snapshot of the verified BSP 4.9 state |
 | `kernel-6.18` | Porting the board to Linux 6.18 LTS. Carries a second kernel tree next to the BSP; see `docs/09-mainline-bringup.md` for its status |
-| `mainline` | The earlier research branch this replaced. Kept only so its history stays reachable; no new work goes here |
+| `mainline` | A placeholder branch from before this work started. It points at a commit that is already in `main`'s history and carries nothing of its own, so it can be deleted at any time |
 
 The kernel lines are kept apart deliberately. `main` stays functional while
 `kernel-6.18` is worked on, and until that work passes M5 (HDMI capture)
