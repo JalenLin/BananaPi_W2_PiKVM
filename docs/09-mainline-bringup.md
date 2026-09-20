@@ -21,7 +21,7 @@ sit side by side and the build picks one.
 | Path | What it is |
 |------|------------|
 | `vendor/linux-mainline` | The upstream tree, shallow-cloned at `v6.18.52`. Never edited in place |
-| `patches/linux-mainline/` | Changes to files that already exist upstream |
+| `patches/linux-mainline/` | Changes to files that already exist upstream: the dts Makefile line, and the board compatible in the bindings |
 | `kernel/mainline/rtd1296-bananapi-w2.dts` | Our board DTS |
 | `kernel/mainline/bpiw2.config` | Kconfig fragment merged onto `arm64 defconfig` |
 | `docker/builder-mainline.Dockerfile` | Trixie + `gcc-aarch64-linux-gnu` 14.2 |
@@ -32,6 +32,9 @@ make builder-mainline     # trixie compile container
 make sources-mainline     # fetch the kernel (~2 GB) and apply patches/linux-mainline
 make kernel-mainline      # Image + dtbs + modules
 make image-mainline       # SD image with that kernel instead of the BSP one
+
+# narrower runs, useful while iterating on the DTS
+CHECK_DTBS=1 TARGETS='realtek/rtd1296-bananapi-w2.dtb' scripts/build-kernel-mainline.sh
 ```
 
 `make sources-mainline` is `WITH_MAINLINE=1 scripts/prepare-sources.sh`; the
@@ -205,6 +208,28 @@ uses. `scripts/build-image.sh` now sizes p1 from what was actually staged,
 rounded up to a multiple of 32 MiB, with 60 MiB as the floor -- so the BSP
 image keeps exactly the layout that was verified on hardware, and the
 mainline image gets a bigger p1 and a later p2 start.
+
+### Validated against the devicetree bindings
+
+`CHECK_DTBS=1 make kernel-mainline` runs the dtb through `dt-validate`. The
+board dtb comes out clean. Two things came of turning it on:
+
+- **`bananapi,bpi-w2` was not a legal compatible.**
+  `Documentation/devicetree/bindings/arm/realtek.yaml` lists the RTD1296
+  boards and only had the Synology DS418.
+  `patches/linux-mainline/0002-*` adds ours, following the `bananapi,bpi-m4`
+  entry already in the RTD1395 list. This is the kind of patch that goes
+  upstream as-is.
+- **Five remaining warnings are upstream's, not ours.** The `syscon@*` nodes
+  in `rtd129x.dtsi` are `compatible = "syscon", "simple-mfd"`, and
+  `syscon-common.yaml` wants a device-specific string in front. Running the
+  same check on the untouched `rtd1296-ds418.dtb` produces the identical five
+  lines, which is how we know they are inherited and not something this board
+  file introduced.
+
+`CHECK_DTBS` is off by default, and the build script deliberately passes the
+variable only when it is on: the kernel tests it with
+`ifneq ($(CHECK_DTBS),)`, so `CHECK_DTBS=0` would turn checking **on**.
 
 ### Not yet verified on hardware
 

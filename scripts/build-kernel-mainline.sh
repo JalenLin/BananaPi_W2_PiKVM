@@ -11,6 +11,17 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 TARGETS="${TARGETS:-Image dtbs modules}"
 
+# CHECK_DTBS=1 also runs the dtb through dt-validate against the bindings in
+# Documentation/devicetree/bindings. Off by default because it roughly doubles
+# the dtbs step; worth running whenever the board DTS changes.
+#
+# The kernel tests this with ifneq($(CHECK_DTBS),), so CHECK_DTBS=0 would turn
+# checking ON. It has to be unset, not falsy.
+MAKE_ARGS=""
+if [ "${CHECK_DTBS:-0}" != "0" ]; then
+    MAKE_ARGS="CHECK_DTBS=1"
+fi
+
 BUILDER_IMAGE="${BUILDER_IMAGE:-bpiw2-pikvm/builder-mainline:trixie}" \
 exec "$PROJECT_ROOT/scripts/in-docker.sh" bash -c '
 set -euo pipefail
@@ -40,7 +51,7 @@ if [ ! -f .config ] || [ /work/kernel/mainline/bpiw2.config -nt .config ]; then
     make olddefconfig
 fi
 
-make -j"$(nproc)" '"$TARGETS"'
+make -j"$(nproc)" '"$MAKE_ARGS"' '"$TARGETS"'
 
 echo
 echo "--- built ---"

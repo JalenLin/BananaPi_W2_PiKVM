@@ -29,18 +29,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gzip \
         kmod \
         libelf-dev \
+        libfdt-dev \
         libncurses-dev \
         libssl-dev \
         lz4 \
         lzop \
         make \
         pahole \
+        pkg-config \
         python3 \
+        python3-dev \
+        python3-pip \
         rsync \
+        swig \
         u-boot-tools \
         xz-utils \
         zstd \
+        yamllint \
     && rm -rf /var/lib/apt/lists/*
+
+# dtschema, for `CHECK_DTBS=1 make kernel-mainline`. Not packaged in trixie,
+# and its pylibfdt dependency is built from source -- hence swig, libfdt-dev,
+# python3-dev and pkg-config above.
+RUN pip3 install --break-system-packages --no-cache-dir --root-user-action=ignore \
+        dtschema
 
 # Shared with the bullseye builder: run as the caller's uid/gid so build
 # outputs are not left owned by root.

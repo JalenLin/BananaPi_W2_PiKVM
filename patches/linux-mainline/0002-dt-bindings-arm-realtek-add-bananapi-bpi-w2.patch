@@ -1,0 +1,19 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] dt-bindings: arm: realtek: add Banana Pi BPI-W2
+
+The RTD1296 enum only lists the Synology DS418, so a board dts using
+"bananapi,bpi-w2" fails dt-validate. The RTD1395 list already carries
+"bananapi,bpi-m4", so the vendor prefix and the naming are established.
+
+diff --git a/Documentation/devicetree/bindings/arm/realtek.yaml b/Documentation/devicetree/bindings/arm/realtek.yaml
+index ddd9a8509..ea446cde9 100644
+--- a/Documentation/devicetree/bindings/arm/realtek.yaml
++++ b/Documentation/devicetree/bindings/arm/realtek.yaml
+@@ -39,6 +39,7 @@ properties:
+       # RTD1296 SoC based boards
+       - items:
+           - enum:
++              - bananapi,bpi-w2 # Banana Pi BPI-W2
+               - synology,ds418 # Synology DiskStation DS418
+           - const: realtek,rtd1296
+ 
