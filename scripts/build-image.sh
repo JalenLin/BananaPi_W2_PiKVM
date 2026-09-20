@@ -2,25 +2,45 @@
 # Assemble a flashable SD card image.
 #
 # Layout (from the BSP's scripts/dd_download.sh and bootloader.sh):
-#   offset 40 KiB        u-boot.bin
-#   sector 204800..327679  p1 vfat  60 MiB  "BPI-BOOT"
-#   sector 327680..        p2 ext4          rootfs
+#   offset 40 KiB          u-boot.bin
+#   sector 204800..        p1 vfat  "BPI-BOOT"  -- 60 MiB, grown if the staged
+#                                                  boot files need more
+#   after p1               p2 ext4  rootfs
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BSP="$PROJECT_ROOT/vendor/bpi-w2-bsp"
 BUILD="$PROJECT_ROOT/build"
-OUT="$BUILD/bpiw2-pikvm.img"
-KVER="4.9.119-BPI-W2-Kernel"
+
+# Which kernel line to put in the image. u-boot, the audio firmware blob and
+# the vendor initramfs come from the BSP either way -- only the Image and the
+# dtb differ. See docs/09-mainline-bringup.md.
+FLAVOUR="${KERNEL_FLAVOUR:-bsp}"
+case "$FLAVOUR" in
+    bsp)
+        KIMAGE="$BSP/linux-rtk/arch/arm64/boot/Image"
+        KDTB="$BSP/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-w2-2GB.dtb"
+        OUT="$BUILD/bpiw2-pikvm.img"
+        ;;
+    mainline)
+        LINUX="$PROJECT_ROOT/vendor/linux-mainline"
+        KIMAGE="$LINUX/arch/arm64/boot/Image"
+        KDTB="$LINUX/arch/arm64/boot/dts/realtek/rtd1296-bananapi-w2.dtb"
+        OUT="$BUILD/bpiw2-pikvm-mainline.img"
+        ;;
+    *)
+        echo "KERNEL_FLAVOUR must be 'bsp' or 'mainline', got '$FLAVOUR'" >&2
+        exit 1
+        ;;
+esac
+echo ">>> kernel flavour: $FLAVOUR"
 
 IMG_MB=3072          # total size
 P1_START=204800      # sector
-P1_SECTORS=122880    # 60 MiB
-P2_START=327680
 
 for f in "$BSP/u-boot-rtk/u-boot.bin" \
-         "$BSP/linux-rtk/arch/arm64/boot/Image" \
-         "$BSP/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-w2-2GB.dtb" \
+         "$KIMAGE" \
+         "$KDTB" \
          "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/bluecore.audio" \
          "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/uInitrd" \
          "$BUILD/rootfs.tar"; do
@@ -30,8 +50,8 @@ done
 echo ">>> staging boot files"
 rm -rf "$BUILD/bootfs" && mkdir -p "$BUILD/bootfs/bananapi/bpi-w2/linux"
 L="$BUILD/bootfs/bananapi/bpi-w2/linux"
-cp "$BSP/linux-rtk/arch/arm64/boot/Image" "$L/uImage"
-cp "$BSP/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-w2-2GB.dtb" "$L/bpi-w2.dtb"
+cp "$KIMAGE" "$L/uImage"
+cp "$KDTB" "$L/bpi-w2.dtb"
 cp "$L/bpi-w2.dtb" "$L/rtd-1296-bananapi-w2-2GB.dtb"
 cp "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/bluecore.audio" "$L/"
 # u-boot's compiled-in name is root.sd.cpio.gz_pad.img; the uEnv.txt set uses
@@ -42,6 +62,20 @@ cp "$L/root.sd.cpio.gz_pad.img" "$L/uInitrd"
 cp "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/uEnv.txt" "$L/"
 cp "$BSP/rtk-pack/rtk/bpi-w2/bin/spirom-bpi-w2.bin" "$BUILD/bootfs/"
 du -sh "$BUILD/bootfs"
+
+# The boot partition is 60 MiB, which is what the BSP kernel needs with room
+# to spare. A mainline Image built from arm64 defconfig is roughly twice the
+# size of the BSP one, so size p1 from what was actually staged and round up
+# to a multiple of 32 MiB. 60 MiB is the floor so the BSP image keeps exactly
+# the layout that was verified on hardware.
+P1_MB=60
+staged_mb="$(du -sm "$BUILD/bootfs" | cut -f1)"
+if [ "$((staged_mb + 12))" -gt "$P1_MB" ]; then
+    P1_MB=$(( ((staged_mb + 12 + 31) / 32) * 32 ))
+fi
+P1_SECTORS=$(( P1_MB * 2048 ))
+P2_START=$(( P1_START + P1_SECTORS ))
+echo ">>> boot partition: ${P1_MB} MiB (${staged_mb} MiB staged), rootfs starts at sector $P2_START"
 
 echo ">>> assembling the image (in a container, no loop device needed)"
 docker run --rm --entrypoint bash \

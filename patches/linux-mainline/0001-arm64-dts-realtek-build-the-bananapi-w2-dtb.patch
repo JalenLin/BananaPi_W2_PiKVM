@@ -1,0 +1,21 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] arm64: dts: realtek: build the Banana Pi BPI-W2 dtb
+
+The board .dts itself is kept outside the kernel tree, in
+kernel/mainline/rtd1296-bananapi-w2.dts, and copied in by
+scripts/build-kernel-mainline.sh. It changes on nearly every bring-up step,
+so carrying it as a patch would mean regenerating that patch constantly.
+This Makefile line does not change, so it is a patch.
+
+diff --git a/arch/arm64/boot/dts/realtek/Makefile b/arch/arm64/boot/dts/realtek/Makefile
+index ef8d8fcba..91f66a213 100644
+--- a/arch/arm64/boot/dts/realtek/Makefile
++++ b/arch/arm64/boot/dts/realtek/Makefile
+@@ -7,6 +7,7 @@ dtb-$(CONFIG_ARCH_REALTEK) += rtd1295-probox2-ava.dtb
+ dtb-$(CONFIG_ARCH_REALTEK) += rtd1295-xnano-x5.dtb
+ dtb-$(CONFIG_ARCH_REALTEK) += rtd1295-zidoo-x9s.dtb
+ 
++dtb-$(CONFIG_ARCH_REALTEK) += rtd1296-bananapi-w2.dtb
+ dtb-$(CONFIG_ARCH_REALTEK) += rtd1296-ds418.dtb
+ 
+ dtb-$(CONFIG_ARCH_REALTEK) += rtd1395-bpi-m4.dtb

@@ -216,6 +216,13 @@ is already in mainline as precedent for a Banana Pi board.
 
 ## 7. The current decision
 
+> **Superseded (2026-09-21).** The work described below as "do nothing for
+> now" has started, on the `kernel-6.18` branch. The reasoning in this
+> section still explains why `main` stays on BSP 4.9 and why the new line is
+> a separate branch rather than a replacement -- that part has not changed.
+> Progress against the milestones in §6 is tracked in
+> `09-mainline-bringup.md`.
+
 **Do nothing for now.** Recorded here with reasons:
 
 1. The BSP 4.9 path is functionally complete (HDMI + HID + Web UI), so

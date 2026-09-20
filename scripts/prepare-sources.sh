@@ -12,6 +12,10 @@ VENDOR="$PROJECT_ROOT/vendor"
 # same thing. To move up a version, change it here and re-verify.
 BSP_URL="https://github.com/BPI-SINOVOIP/BPI-W2-bsp.git"
 BSP_REF="master"
+# The mainline/LTS kernel line. The BSP is still needed alongside it -- u-boot,
+# the audio firmware blob and the vendor initramfs all come from there.
+LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+LINUX_REF="v6.18.52"
 KVMD_URL="https://github.com/pikvm/kvmd.git"
 KVMD_REF="v4.213"
 USTREAMER_URL="https://github.com/pikvm/ustreamer.git"
@@ -64,6 +68,17 @@ fetch_source bpi-w2-bsp "$BSP_URL" "$BSP_REF"
 echo ">>> applying kernel patches"
 apply_patches bpi-w2-bsp kernel
 
+# The mainline kernel is a second, independent tree: ~2 GB to clone, and only
+# the kernel-6.18 branch needs it, so it is opt-in via WITH_MAINLINE=1
+# (`make sources-mainline`).
+SOURCES="bpi-w2-bsp ustreamer kvmd"
+if [ "${WITH_MAINLINE:-0}" = "1" ]; then
+    fetch_source linux-mainline "$LINUX_URL" "$LINUX_REF"
+    echo ">>> applying mainline kernel patches"
+    apply_patches linux-mainline linux-mainline
+    SOURCES="$SOURCES linux-mainline"
+fi
+
 fetch_source ustreamer "$USTREAMER_URL" "$USTREAMER_REF"
 echo ">>> applying ustreamer patches"
 apply_patches ustreamer ustreamer
@@ -73,7 +88,7 @@ echo ">>> applying kvmd patches"
 apply_patches kvmd kvmd
 
 echo ">>> done"
-for d in bpi-w2-bsp ustreamer kvmd; do
+for d in $SOURCES; do
     echo "--- $d ---"
     git -C "$VENDOR/$d" status --short | head -20
 done

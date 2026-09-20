@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR BSD-2-Clause)
+/*
+ * Banana Pi BPI-W2 (Realtek RTD1296), 2 GiB variant
+ *
+ * Bring-up board file for the mainline/LTS kernel line. It is deliberately
+ * minimal: mainline already carries rtd1296.dtsi, and the BSP's own
+ * rtd-1296-bananapi-w2-2GB.dts is ~400 lines of vendor-only bindings that
+ * have no driver here. Nodes get added back as each milestone in
+ * docs/09-mainline-bringup.md is reached.
+ *
+ * Boot chain is unchanged: the BSP u-boot 2015.07 loads this DTB to
+ * 0x02100000, the Image to 0x03000000 and the initramfs to 0x02200000, then
+ * runs `booti`. u-boot writes both bootargs and linux,initrd-start/end into
+ * /chosen itself, so neither is set here.
+ */
+
+/dts-v1/;
+
+#include "rtd1296.dtsi"
+
+/ {
+	compatible = "bananapi,bpi-w2", "realtek,rtd1296";
+	model = "Banana Pi BPI-W2";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* Same 2 GiB layout as the DS418; the first 0x1f000 is boot ROM. */
+	memory@1f000 {
+		device_type = "memory";
+		reg = <0x1f000 0x7ffe1000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * The BSP u-boot loads bluecore.audio to CONFIG_FW_LOADADDR
+		 * (0x0f900000, 4 MiB reserved) before handing over, and the
+		 * audio CPU may already be fetching from it. Nothing on this
+		 * kernel line uses the ACPU, but letting Linux allocate over a
+		 * running core is not worth the debugging.
+		 */
+		acpu_fw: audio-firmware@f900000 {
+			reg = <0x0f900000 0x00400000>;
+			no-map;
+		};
+
+		/* ACPU_IDMEM_PHYS / ACPU_IDMEM_SIZE in the BSP's memory.h */
+		acpu_idmem: acpu-idmem@10000000 {
+			reg = <0x10000000 0x00014000>;
+			no-map;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
