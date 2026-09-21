@@ -1,0 +1,44 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] irqchip: add the Realtek RTD1295/RTD1296 peripheral irq mux
+
+The driver itself is kept outside the kernel tree, in
+kernel/mainline/irq-rtd129x.c, and copied in by
+scripts/build-kernel-mainline.sh -- same reasoning as the board .dts: it is
+still changing, and regenerating a 300-line patch on every edit is noise.
+These two build-system lines do not change, so they are a patch.
+
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index a61c6dc63..1093cdc72 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -814,6 +814,18 @@ config SOPHGO_SG2042_MSI
+ 	  This on-chip interrupt controller enables MSI sources to be
+ 	  routed to the primary PLIC controller on SoC.
+ 
++config REALTEK_RTD129X_IRQ_MUX
++	bool "Realtek RTD1295/RTD1296 peripheral interrupt mux"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	default ARCH_REALTEK
++	select IRQ_DOMAIN
++	help
++	  Support for the two peripheral interrupt muxes on the Realtek
++	  RTD1295/RTD1296, which fold the MISC and ISO peripheral interrupts
++	  onto one GIC SPI each. Without it the UARTs, I2C controllers and
++	  GPIO blocks on these SoCs have no interrupt and fall back to
++	  polling, where they have a driver that can.
++
+ config SUNPLUS_SP7021_INTC
+ 	bool "Sunplus SP7021 interrupt controller" if COMPILE_TEST
+ 	default SOC_SP7021
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index 3de083f54..cc5afc39d 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -130,6 +130,7 @@ obj-$(CONFIG_LOONGSON_PCH_LPC)		+= irq-loongson-pch-lpc.o
+ obj-$(CONFIG_MST_IRQ)			+= irq-mst-intc.o
+ obj-$(CONFIG_SL28CPLD_INTC)		+= irq-sl28cpld.o
+ obj-$(CONFIG_MACH_REALTEK_RTL)		+= irq-realtek-rtl.o
++obj-$(CONFIG_REALTEK_RTD129X_IRQ_MUX)	+= irq-rtd129x.o
+ obj-$(CONFIG_WPCM450_AIC)		+= irq-wpcm450-aic.o
+ obj-$(CONFIG_IRQ_IDT3243X)		+= irq-idt3243x.o
+ obj-$(CONFIG_APPLE_AIC)			+= irq-apple-aic.o

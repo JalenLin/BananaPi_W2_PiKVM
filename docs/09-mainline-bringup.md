@@ -149,7 +149,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | Stage | What it needs | Status |
 |-------|---------------|--------|
 | **M0** | BSP u-boot + clean 6.18.x + board DTS; serial console, single core | **done**, booted 2026-09-21 -- see §5 |
-| **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`, drop `reg` from rbus | not started |
+| **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
 | **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | not started |
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
@@ -349,10 +349,18 @@ Both are expected, and both are M1:
 
   ```
   dw-apb-uart 98007800.serial: error -ENXIO: IRQ index 0 not found
-  /soc@0/interrupt-controller@ff011000: Fixed dependency cycle(s) with /soc@0/interrupt-controller@ff011000
   ```
 
-  That dependency cycle is the IRQ mux, i.e. the `irq-rtd129x.c` half of M1.
+  Not a mux failure -- there is nothing to fail yet. `uart0` in
+  `rtd129x.dtsi` has no `interrupts` property at all, and the whole file
+  carries exactly two: the GIC's own maintenance PPI and the arch timer.
+  Mainline's RTD129x has no interrupt routing below the GIC. Supplying it is
+  the `irq-rtd129x.c` half of M1.
+
+  (The `Fixed dependency cycle(s) with /soc@0/interrupt-controller@ff011000`
+  line in the same log is **not** related. `ff011000` is the GIC-400 itself,
+  and the cycle is it referencing its own maintenance interrupt -- a routine
+  fw_devlink message.)
 
 ### How to test it
 
@@ -395,7 +403,108 @@ BPI-W2 would be needed; nothing about the image is at fault.
 
 ---
 
-## 6. Sources
+## 6. M1
+
+Four cores and an interrupt-driven UART. Two independent pieces, built and
+tested together because each test cycle needs a human to power-cycle the
+board.
+
+### The interrupt mux
+
+`rtd129x.dtsi` carries exactly two `interrupts` properties -- the GIC's own
+maintenance PPI and the arch timer. Everything below the GIC is
+interruptless, which is why M0 saw:
+
+```
+dw-apb-uart 98007800.serial: error -ENXIO: IRQ index 0 not found
+```
+
+The SoC folds peripheral interrupts onto two GIC SPIs, one for the MISC
+register block and one for ISO. Each has a status register and an enable
+register, and the two are **not bit-aligned**:
+
+| Source | status bit | enable bit |
+|---|---|---|
+| MISC UART1 | 3 | 3 |
+| MISC UART2 | 8 | **7** |
+| MISC UART2 timeout | 13 | **6** |
+| MISC I2C3 | 23 | **28** |
+| ISO UART0 | 2 | 2 |
+
+So the mapping has to live in the driver, and a device's `interrupts`
+property carries only the status bit.
+
+`kernel/mainline/irq-rtd129x.c` is a rewrite rather than a copy of the BSP's
+`drivers/irqchip/irq-rtd129x.c`. The BSP's `irq_chip` is wired the wrong way
+round: its `.irq_mask` writes the *status* register, which acknowledges
+rather than masks, and only `.irq_disable` touches the enable bits. Here
+`.irq_mask`/`.irq_unmask` gate the source and `.irq_ack` does the
+write-one-to-clear, which is what genirq expects of a level chip. The chained
+handler skips status bits whose enable bit is clear, so a stale bit from a
+masked source is not dispatched.
+
+Two other differences from the BSP:
+
+- **One node per mux**, not one node describing both. Mainline's
+  `realtek,rtd-gpio.yaml` -- already merged -- has an example that references
+  `<&iso_irq_mux>` with `#interrupt-cells = <1>`, a controller that exists
+  nowhere in the tree. This driver supplies that dangling reference, with the
+  cell count the merged binding already assumes.
+- **The node claims only the two registers it uses**, `reg = <0x0 0x4>, <0x40
+  0x4>`, rather than 0x100 of its syscon. That keeps it clear of
+  `iso_reset@88` and the UARTs.
+
+### Four cores
+
+`rtd1296.dtsi` declares four Cortex-A53s with no `enable-method`, so mainline
+brought up CPU0 and said so about the rest. The BSP uses
+`enable-method = "rtk-spin-table"` with `cpu-release-addr = <0x0 0x9801aa44>`
+-- and that address is a **register in the SB2 block, not RAM**, which is the
+whole reason it needed its own method. Realtek's
+`drivers/soc/realtek/rtd129x/rtd129x_spin_table.c` differs from mainline's
+`smp_spin_table.c` in exactly two ways: `ioremap` instead of `ioremap_cache`,
+and a 32-bit `writel_relaxed` instead of a 64-bit `writeq_relaxed`.
+
+So rather than carrying a second cpu_ops implementation, patch 0005 teaches
+mainline's spin-table to recognise the case, keyed on
+`memblock_is_map_memory()`: a release address that is not mapped RAM is
+mapped as device memory and written 32 bits wide. Platforms whose release
+address really is RAM take the existing path untouched, and the DT uses the
+standard `"spin-table"`.
+
+### Verified on hardware, 2026-09-22
+
+```
+[    0.005404] smp: Bringing up secondary CPUs ...
+[    0.006138] CPU1: Booted secondary processor 0x0000000001 [0x410fd034]
+[    0.006996] CPU2: Booted secondary processor 0x0000000002 [0x410fd034]
+[    0.007794] CPU3: Booted secondary processor 0x0000000003 [0x410fd034]
+[    0.007938] smp: Brought up 1 node, 4 CPUs
+[    0.008048] SMP: Total of 4 processors activated.
+[    0.211633] 98007800.serial: ttyS0 at MMIO 0x98007800 (irq = 16, base_baud = 1687500) is a 16550A
+[    0.211822] printk: legacy console [ttyS0] enabled
+...
+[    1.650773] SMP: stopping secondary CPUs
+[    1.667445] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0) ]---
+```
+
+`IRQ index 0 not found` and `missing enable-method` are both gone, `irq = 16`
+is a real mapping out of the ISO mux, and no `nobody cared`, no spurious
+interrupt, no warning anywhere in the boot. `SMP: stopping secondary CPUs` on
+the way into the panic is the confirmation that the other three were still
+running at that point.
+
+The panic is unchanged from M0 and still expected: there is no mmc host
+driver, so there is no root device. M3 is what gives this kernel a root, on
+USB.
+
+`dtbs_check` on the board dtb reports the same five `syscon ... is too short`
+warnings as at M0, all from upstream `rtd129x.dtsi`. The mux nodes, the
+binding and the cpu nodes add none.
+
+---
+
+## 7. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -403,3 +512,5 @@ BPI-W2 would be needed; nothing about the image is at fault.
 | `vendor/bpi-w2-bsp/u-boot-rtk` | `boot_from_sd()`, the load addresses, the bootargs |
 | `vendor/bpi-w2-bsp/linux-rtk/include/soc/realtek/memory.h` | `ACPU_IDMEM_PHYS`/`_SIZE` |
 | `08-kernel-uplift.md` | The milestone definitions and the list of things to copy |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/irqchip/irq-rtd129x.[ch]` | The interrupt mux register layout and the status-bit -> enable-bit tables |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtd129x_spin_table.c` | How the secondary CPUs are released |

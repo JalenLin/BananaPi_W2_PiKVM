@@ -41,6 +41,9 @@ export LOCALVERSION=""
 # on nearly every bring-up step; the Makefile line that builds it is the patch.
 cp /work/kernel/mainline/rtd1296-bananapi-w2.dts \
    arch/arm64/boot/dts/realtek/rtd1296-bananapi-w2.dts
+cp /work/kernel/mainline/irq-rtd129x.c drivers/irqchip/irq-rtd129x.c
+cp "/work/kernel/mainline/realtek,rtd1295-irq-mux.yaml" \
+   "Documentation/devicetree/bindings/interrupt-controller/realtek,rtd1295-irq-mux.yaml"
 
 # arm64 defconfig is the baseline everyone else ports against, so start there
 # and layer only what this board needs on top.
