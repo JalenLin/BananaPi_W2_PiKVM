@@ -408,7 +408,8 @@ Debug helpers (not part of the build):
 | `pi-ssh.sh` | Reach the test source Pi. Credentials are **not in the file**; pass `PI_HOST` / `PI_PASS` as environment variables — the script is version-controlled, and hardcoding a password means committing it |
 | `serial-cmd.sh` | Issue serial console commands via `/dev/ttyUSB0` |
 | `uboot-cmd.sh` | When the board will not boot, break into the u-boot console during the boot loop and issue commands. The most useful trick is booting with `setenv root /dev/ram` — no rootfs is mounted at all, which cleanly separates "software problem" from "hardware/power problem" |
-| `lk-boot-usb.sh` | Boot from USB via LK |
+| `lk-boot-usb.sh` | Boot from USB via LK. A USB card reader holding the SD card works and needs no reflashing |
+| `lk-console.py` | The command sequence `lk-boot-usb.sh` drives. Waits for the `Realtek> ` prompt between commands: LK shares its UART with the audio core, so output interleaves character by character and fixed sleeps desync |
 | `kvmd-fix-perms.sh` | Fix kvmd file permissions (a leftover from the hot-deploy era) |
 
 `Makefile` flow: `make all` = `builder → sources → kernel → uboot → rootfs → image`

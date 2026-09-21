@@ -51,6 +51,34 @@ echo ">>> staging boot files"
 rm -rf "$BUILD/bootfs" && mkdir -p "$BUILD/bootfs/bananapi/bpi-w2/linux"
 L="$BUILD/bootfs/bananapi/bpi-w2/linux"
 cp "$KIMAGE" "$L/uImage"
+if [ "$FLAVOUR" = "mainline" ]; then
+    # Both of this board's bootloaders take text_offset straight out of the
+    # arm64 Image header and load the kernel at
+    # `gd->bd->bi_dram[0].start + text_offset` -- see booti_setup() in the
+    # BSP u-boot's common/cmd_bootm.c:715. Neither looks at bit 3 of `flags`,
+    # the "this kernel may be placed at any 2 MiB aligned address" bit, and
+    # CONFIG_SYS_SDRAM_BASE is 0 here, so the load address *is* text_offset.
+    #
+    # Mainline has hardcoded text_offset to 0 since 5.8, which puts the
+    # kernel at physical 0 -- the boot ROM, not RAM -- and it dies without a
+    # single character of output. LK prints exactly that:
+    #     Boot image target addr:0x00000000, size:0x027f0000
+    # The BSP 4.9 kernel still carried text_offset 0x280000 and so booted.
+    #
+    # The kernel never reads this field itself, so patching it only steers
+    # the bootloader. 0x08000000 is 2 MiB aligned and clear of everything:
+    #     0x08000000..0x0a7f0000  where the kernel lands
+    #     0x03000000..0x0572fa00  where the bootloader read the Image to
+    #     0x02100000, 0x02200000  dtb, initrd
+    #     0x0f900000              bluecore.audio / acpu_fw reserved-memory
+    TEXT_OFFSET="${KERNEL_TEXT_OFFSET:-0x08000000}"
+    esc=""
+    for i in 0 1 2 3 4 5 6 7; do
+        esc="$esc\\x$(printf '%02x' $(( ($TEXT_OFFSET >> (8 * i)) & 0xff )))"
+    done
+    printf "$esc" | dd of="$L/uImage" bs=1 seek=8 conv=notrunc status=none
+    echo ">>> patched arm64 text_offset to $TEXT_OFFSET (old bootloaders ignore the relocatable flag)"
+fi
 cp "$KDTB" "$L/bpi-w2.dtb"
 cp "$L/bpi-w2.dtb" "$L/rtd-1296-bananapi-w2-2GB.dtb"
 cp "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/bluecore.audio" "$L/"
