@@ -31,6 +31,17 @@ and map it to `/dev/kvmd-video`.
 
 ## D3 — Rootfs: Debian 13 (trixie) arm64
 
+> **To revisit on the `kernel-6.18` branch (decided 2026-09-22).** The
+> evidence below rules Arch out *because of the BSP's 4.9 kernel*: systemd
+> 258 dropped cgroup v1 and raised its floor to 5.4, and ALARM is rolling, so
+> it inevitably reaches 258+. On 6.18 that objection disappears entirely.
+> Since upstream PiKVM targets Arch, moving to ALARM there would delete most
+> of the Debian-specific packaging work in `05-userspace.md`. The plan is to
+> switch **after** the kernel line is done, not during: changing the rootfs
+> while the kernel is still being brought up makes it ambiguous which layer a
+> failure belongs to.
+
+
 **Revised on 2026-09-04 based on QEMU testing. This previously said Debian
 12 plus a self-built Python, which was the long way round.**
 

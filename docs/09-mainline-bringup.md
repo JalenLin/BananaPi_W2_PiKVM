@@ -151,7 +151,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M0** | BSP u-boot + clean 6.18.x + board DTS; serial console, single core | **done**, booted 2026-09-21 -- see §5 |
 | **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
 | **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | not started |
-| **M3** | USB DT + the two probe quirks, Type-C as peripheral | not started |
+| **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
 | **M6** | mmc host driver | not started |
@@ -504,7 +504,222 @@ binding and the cpu nodes add none.
 
 ---
 
-## 7. Sources
+## 7. M3, the host half
+
+Root on USB, and with it the first real userspace on this kernel line.
+
+### Mainline already had the drivers
+
+Nothing had to be written. 6.18 carries `dwc3-rtk.c`, `phy-rtk-usb2.c`,
+`phy-rtk-usb3.c` and `extcon-rtk-type-c.c`, and every one of them lists an
+`rtd1295` compatible. What it does not carry is a single **device tree** node
+using them: no `.dtsi` under `arch/arm64/boot/dts/realtek/` mentions dwc3 at
+all. So M3 is DT work.
+
+`arm64 defconfig` already sets `USB_DWC3`, `USB_DWC3_RTK`, xhci, usb-storage,
+SCSI and ext4. Only the two phys had to be turned on, and they are what dwc3
+waits for:
+
+```
+CONFIG_PHY_RTK_RTD_USB2PHY=y
+CONFIG_PHY_RTK_RTD_USB3PHY=y
+```
+
+Ports 1 (USB 2.0 host) and 3 (USB 3.0 host) are described; port 0 is the
+Type-C/DRD port and port 2 the EHCI/OHCI pair, neither of which is here yet.
+The addresses come from the BSP's `rtd-129x-usb.dtsi`, with two corrections:
+
+- **The usb2phy `reg` order is reversed from the BSP's.** Mainline's binding
+  is `<PHY data>, <PHY control>` and `phy-rtk-usb2.c` maps index 0 to
+  `reg_wrap_vstatus` and index 1 to `reg_gusb2phyacc0`. The BSP lists them
+  the other way round.
+- **The dwc3 wrapper length is 0x140, not the BSP's 0x200.**
+
+### The -EBUSY that was my own fault
+
+With `reg = <0x13c00 0x200>, <0x13d60 0x4>` the first entry runs to 0x13e00
+and swallows the second, so the driver's own second request collides with its
+first:
+
+```
+rtk-dwc3 98013c00.usb: error -EBUSY: can't request region for resource [mem 0x98013d60-0x98013d63]
+rtk-dwc3 98013c00.usb: probe with driver rtk-dwc3 failed with error -16
+```
+
+The upstream binding example uses 0x140 for exactly this reason.
+
+This was first misdiagnosed as the rbus `reg` trap from §3 of
+`08-kernel-uplift.md`, and a patch was written to drop that property. It was
+wrong: `simple-bus` has no driver that requests its region, so the `reg`
+there cannot cause `-EBUSY`. The patch was dropped again rather than carried
+as an unjustified deviation from upstream, and a test with the rbus `reg` in
+place and the length corrected confirmed it is not needed. **The prediction
+in `08` §3 that this property breaks child MMIO requests is wrong.**
+
+### LK hands the kernel an empty command line
+
+Setting `/chosen/bootargs` from the LK console does not survive -- LK
+overwrites it on the way past, which is why M0 saw `Kernel command line:`
+with nothing after it. `root=` never arrived, so `rootwait` never waited and
+the kernel gave up before the USB device had finished enumerating.
+
+The command line is therefore compiled in with `CONFIG_CMDLINE_FORCE`. That
+also made the SD path work (see below), because it no longer matters what a
+bootloader does or does not pass.
+
+### Where the kernel is allowed to live
+
+`text_offset` decides more than whether the kernel boots: it decides which
+physical memory the kernel *occupies*, and on this SoC a lot of memory
+belongs to the Realtek firmware, which keeps running alongside Linux. The
+BSP reserves it with `/memreserve/`; mainline reserves none of it.
+
+`0x08000000`, used through the first half of M3, sits in the middle of ION
+media heap 1. The firmware's video path -- `VO_SetVideoStandard`, HDMI
+infoframes, all of it visible in the boot log -- writes there. The kernel now
+loads at `0x1c000000`, above every firmware region, and the board DTS
+reserves the heaps:
+
+| Region | Range |
+|---|---|
+| ION audio heap | `0x02600000..0x03200000` |
+| ION media heap 1 | `0x03200000..0x0ea00000` |
+| bluecore.audio / acpu_fw | `0x0f900000..0x0fd00000` |
+| TEE (from `rtd129x.dtsi`) | `0x10100000..0x11000000` |
+| ION media heap 2 | `0x11000000..0x1a200000` |
+| **kernel** | `0x1c000000..0x1e7f0000` |
+
+### Verified on hardware, 2026-09-22
+
+```
+xhci-hcd xhci-hcd.0.auto: irq 17, io mem 0x98029000
+xhci-hcd xhci-hcd.1.auto: irq 17, io mem 0x981f0000
+xhci-hcd xhci-hcd.1.auto: Host supports USB 3.0 SuperSpeed
+usb 3-1: new SuperSpeed USB device number 2 using xhci-hcd
+usb-storage 3-1:1.0: USB Mass Storage device detected
+sd 0:0:0:0: [sda] 61120512 512-byte logical blocks: (31.3 GB/29.1 GiB)
+ sda: sda1 sda2
+EXT4-fs (sda2): mounted filesystem ... r/w with ordered data mode.
+VFS: Mounted root (ext4 filesystem) on device 8:2.
+systemd[1]: systemd 257.13-1~deb13u1 running in system mode
+Welcome to Debian GNU/Linux 13 (trixie)!
+...
+[  OK  ] Reached target getty.target - Login Prompts.
+[  OK  ] Started ssh.service - OpenBSD Secure Shell server.
+[FAILED] Failed to start kvmd-otg.service - PiKVM - OTG setup.
+[  OK  ] Started kvmd.service - PiKVM - The main daemon.
+
+Debian GNU/Linux 13 bpi-w2-pikvm ttyS0
+bpi-w2-pikvm login:
+```
+
+19 targets, a login prompt, and `kvmd.service` running -- most of M4 comes
+free, because the rootfs userspace was already built and waiting. `kvmd-otg`
+is the Type-C gadget, which is the half of M3 still to do.
+
+The `irq 17` on both controllers comes out of the ISO mux built in M1.
+
+Logged in over the serial console, the running system confirms M1 and M3
+together:
+
+```
+# uname -a
+Linux bpi-w2-pikvm 6.18.52-bpiw2 #15 SMP PREEMPT aarch64 GNU/Linux
+# nproc
+4
+# cat /proc/interrupts
+           CPU0       CPU1       CPU2       CPU3
+ 13:      10561      21341      15574      13855    GICv2  30 Level     arch_timer
+ 16:       1061          0          0          1 rtd129x-irq-mux   2 Edge      ttyS0
+ 17:      10019          0          0          0    GICv2  53 Level     xhci-hcd:usb1, xhci-hcd:usb2
+# free -m
+               total        used        free      shared  buff/cache   available
+Mem:            1591         201        1338           0         119        1389
+# lsblk
+sda    29.1G disk
+|-sda1   96M part /boot
+`-sda2   29G part /
+# systemctl --failed
+kvmd-otg.service loaded failed failed PiKVM - OTG setup
+```
+
+`rtd129x-irq-mux 2 Edge ttyS0` with a thousand interrupts on it is the M1
+driver doing real work, on the ISO status bit the DTS names. `GICv2 53` for
+xhci is `GIC_SPI 21` translated. `total 1591` MiB is 2 GiB less the 361 MiB
+of firmware reservations, as designed. One failed unit, and it is the Type-C
+gadget.
+
+The login banner still advertises the BSP kernel and `hdmirx-*` helpers --
+it is baked into the rootfs and has not caught up with this branch.
+
+### Unfinished: something still writes over kernel memory
+
+This is an open problem, not a solved one.
+
+Through the middle of M3 the kernel would mount root, start systemd and then
+die within a few seconds, always in SLUB and always on a pointer from the
+`0x80000000` family -- the top of RAM -- but in a different function every
+boot:
+
+```
+put_cpu_partial+0x7c   <- __slab_free <- kfree <- bucket_table_free_rcu
+___slab_alloc+0x164    <- systemd
+xas_find+0xa8          <- next_uptodate_folio
+unmap_vmas+0xac
+```
+
+What has been ruled out:
+
+- **SMP.** `nr_cpus=1` crashes identically, with the same faulting
+  instruction. M1 is not implicated.
+- **The audio core alone.** Skipping LK's `boot a` (`SKIP_BOOT_A=1` in
+  `lk-console.py`) stops PID 1 from being killed and gets systemd much
+  further, but child processes still died. It is a contributor, not the whole
+  cause.
+
+What is *not* understood: the system became stable when `slub_debug=FZPU`
+was turned on -- **and slub_debug reported nothing**. No redzone violation,
+no poison mismatch. A buffer overrun into a neighbouring object would have
+been caught. That it is masked rather than reported fits a writer aiming at a
+fixed physical address: redzoning changes the layout, so the same write no
+longer lands on anything load-bearing.
+
+`slub_debug` is therefore doing duty as a workaround, which is not acceptable
+in a shipping image. It stays for now because it is what makes the board
+usable enough to continue; taking it out is part of finishing this.
+
+`CONFIG_PAGE_POISONING` and `CONFIG_DEBUG_VM` were tried alongside it and
+made things worse -- with `page_poison=1` the kernel died in
+`memblock_free_all` before reaching userspace, which is the poisoning
+touching pages it should not, not the bug being chased.
+
+### The SD slot boots after all
+
+Unrelated to USB, but found on the way. With the card in the board's own slot
+and SW4 = 1, the BSP u-boot loaded and ran the 6.18 kernel:
+
+```
+SD card is detected !!
+BPI: try bootcode_from_sdcard !!
+U-Boot 2015.07 (Sep 16 2026 - 01:49:38 +0000)
+Loading "bananapi/bpi-w2/linux/uImage" to 0x03000000 is OK.
+Starting Kernel ...
+[    0.000000] Kernel command line: earlycon=... root=/dev/sda2 rootwait rw
+Run /init as init process
+Begin: Mounting root file system ...
+```
+
+Six earlier attempts had never got past `C3h`, so the slot is intermittent
+rather than dead. It stopped at `rootwait` because the card was in the slot
+and so there was no `/dev/sda2`; mainline has no mmc host driver, so SD boot
+cannot yet supply its own root. That is M6, and this makes M6 considerably
+more attractive than its position at the end of the list suggests: the
+bootloader side already works, and finishing it would end the
+reader-swapping that every test cycle currently needs.
+
+---
+
+## 8. Sources
 
 | Source | Used for |
 |--------|----------|

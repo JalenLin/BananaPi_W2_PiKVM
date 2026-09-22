@@ -128,7 +128,14 @@ send("fdt addr 0x02100000", 20)
 send('fdt set /chosen bootargs "%s"' % BOOTARGS, 20)
 # `boot a` hands the audio core its firmware and does not return a prompt
 # promptly, so its TIMEOUT is expected and not fatal.
-send("boot a", 30)
+#
+# SKIP_BOOT_A=1 leaves the audio core stopped. Nothing in PiKVM needs it, and
+# it keeps running alongside Linux writing into its own ION heaps -- so this
+# is the switch for deciding whether it is the one corrupting kernel memory.
+if os.environ.get("SKIP_BOOT_A", "0") != "1":
+    send("boot a", 30)
+else:
+    print("  %-56s %s" % ("(boot a skipped)", "SKIP_BOOT_A=1"), flush=True)
 
 print(">>> boot k", flush=True)
 os.write(fd, b"\r")

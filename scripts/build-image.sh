@@ -66,12 +66,22 @@ if [ "$FLAVOUR" = "mainline" ]; then
     # The BSP 4.9 kernel still carried text_offset 0x280000 and so booted.
     #
     # The kernel never reads this field itself, so patching it only steers
-    # the bootloader. 0x08000000 is 2 MiB aligned and clear of everything:
-    #     0x08000000..0x0a7f0000  where the kernel lands
+    # the bootloader. It has to be 2 MiB aligned and clear of every region
+    # the Realtek firmware owns -- the ACPU keeps running alongside Linux and
+    # writes into its ION heaps:
+    #     0x1c000000..0x1e7f0000  where the kernel lands
     #     0x03000000..0x0572fa00  where the bootloader read the Image to
     #     0x02100000, 0x02200000  dtb, initrd
-    #     0x0f900000              bluecore.audio / acpu_fw reserved-memory
-    TEXT_OFFSET="${KERNEL_TEXT_OFFSET:-0x08000000}"
+    #     0x02600000..0x03200000  ION audio heap
+    #     0x03200000..0x0ea00000  ION media heap 1
+    #     0x0f900000..0x0fd00000  bluecore.audio / acpu_fw
+    #     0x10100000..0x11000000  TEE
+    #     0x11000000..0x1a200000  ION media heap 2
+    #
+    # 0x08000000 was used through M3 and sits inside media heap 1, where the
+    # ACPU's video path overwrote the running kernel. It showed up as SLUB
+    # taking a fault on a pointer of 0x80000000 a few seconds into userspace.
+    TEXT_OFFSET="${KERNEL_TEXT_OFFSET:-0x1c000000}"
     esc=""
     for i in 0 1 2 3 4 5 6 7; do
         esc="$esc\\x$(printf '%02x' $(( ($TEXT_OFFSET >> (8 * i)) & 0xff )))"

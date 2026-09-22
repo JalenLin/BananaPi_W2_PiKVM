@@ -54,6 +54,54 @@
 		};
 
 		/* ACPU_IDMEM_PHYS / ACPU_IDMEM_SIZE in the BSP's memory.h */
+		/*
+		 * The audio core's ION heap. `boot a` hands the ACPU its
+		 * firmware and it runs alongside Linux from then on, writing
+		 * here -- but mainline reserves nothing for it, so the page
+		 * allocator hands the same 12 MiB out and the two scribble
+		 * over each other. It shows up late and far from the cause,
+		 * as a corrupted SLUB pointer:
+		 *
+		 *   Unable to handle kernel paging request at virtual address 0000000080000018
+		 *   pc : put_cpu_partial+0x7c/0x140
+		 *   Call trace: __slab_free / kfree / bucket_table_free_rcu
+		 *
+		 * Values from the BSP's ION_AUDIO_HEAP_PHYS/SIZE.
+		 */
+		acpu_audio_heap: audio-heap@2600000 {
+			reg = <0x02600000 0x00c00000>;
+			no-map;
+		};
+
+		/*
+		 * The video firmware's ION heaps. The ACPU's video path runs
+		 * the whole time -- VO_SetVideoStandard, HDMI infoframes --
+		 * and writes here. Until these were reserved the kernel was
+		 * loaded at 0x08000000, i.e. inside heap 1, so the firmware
+		 * was writing over the kernel's own image and the memory
+		 * after it. Values from ION_MEDIA_HEAP_PHYS1/SIZE1 and
+		 * ION_MEDIA_HEAP_PHYS2/SIZE2 in the BSP.
+		 */
+		ion_media1: media-heap@3200000 {
+			reg = <0x03200000 0x0b800000>;
+			no-map;
+		};
+
+		ion_media2: media-heap@11000000 {
+			reg = <0x11000000 0x09200000>;
+			no-map;
+		};
+
+		/*
+		 * The tail of SYS_BOOTCODE. rtd129x.dtsi already reserves
+		 * 0x1f000..0x1ffff as rpc@1f000; this is the rest of what LK
+		 * loaded there ("FW Image to 0x00020000").
+		 */
+		bootcode: bootcode@20000 {
+			reg = <0x00020000 0x00010000>;
+			no-map;
+		};
+
 		acpu_idmem: acpu-idmem@10000000 {
 			reg = <0x10000000 0x00014000>;
 			no-map;
@@ -63,4 +111,91 @@
 
 &uart0 {
 	status = "okay";
+};
+
+/*
+ * USB host ports.
+ *
+ * These belong in rtd129x.dtsi/rtd1296.dtsi eventually -- they describe the
+ * SoC, not the board -- but they are still moving, and the board .dts is a
+ * plain file while the .dtsi changes are patches. They move once they work.
+ *
+ * Addresses come from the BSP's rtd-129x-usb.dtsi, but the wrapper length
+ * is 0x140, not the BSP's 0x200: the second reg entry (the pm control
+ * register) sits at wrapper+0x160, so a 0x200 window swallows it and the
+ * driver's own second request collides with its first --
+ *   rtk-dwc3 98013c00.usb: error -EBUSY: can't request region for resource
+ *   [mem 0x98013d60-0x98013d63]
+ * which is why the upstream binding example uses 0x140.
+ * Note the usb2phy reg
+ * order is the reverse of the BSP's: mainline's binding is
+ * <PHY data (wrapper)>, <PHY control (dwc3 core)>, and phy-rtk-usb2.c maps
+ * index 0 to reg_wrap_vstatus and index 1 to reg_gusb2phyacc0.
+ *
+ * Port 0 is the Type-C/DRD port and port 2 is the EHCI/OHCI pair; neither is
+ * here yet. Port 0 needs the extcon type-c driver to settle orientation, and
+ * mainline has no driver for the BSP's "Realtek,rtd129x-ehci".
+ *
+ * Nothing here powers the ports: the BSP does that from its
+ * "Realtek,usb-manager" through GPIOs, and mainline has no equivalent. When
+ * booting by way of LK that does not matter, because LK has already run
+ * `usb start` and left the clocks and port power on.
+ */
+&rbus {
+	/* Port 1: USB 2.0 host */
+	usb_u2host_usb2phy: usb-phy@13c14 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13c14 0x4>, <0x31280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb@13c00 {
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13c00 0x140>, <0x13d60 0x4>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb@29000 {
+			compatible = "snps,dwc3";
+			reg = <0x29000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb_u2host_usb2phy>;
+			phy-names = "usb2-phy";
+			dr_mode = "host";
+			maximum-speed = "high-speed";
+			snps,dis_u2_susphy_quirk;
+		};
+	};
+
+	/* Port 3: USB 3.0 host */
+	usb_u3host_usb2phy: usb-phy@13e14 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13e14 0x4>, <0x1f8280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb_u3host_usb3phy: usb-phy@13e10 {
+		compatible = "realtek,rtd1295-usb3phy";
+		reg = <0x13e10 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb@13e00 {
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13e00 0x140>, <0x13f60 0x4>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb@1f0000 {
+			compatible = "snps,dwc3";
+			reg = <0x1f0000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb_u3host_usb2phy>, <&usb_u3host_usb3phy>;
+			phy-names = "usb2-phy", "usb3-phy";
+			dr_mode = "host";
+			snps,dis_u2_susphy_quirk;
+		};
+	};
 };
