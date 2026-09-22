@@ -201,12 +201,46 @@ LTS life ahead of it.
 | **M3** | USB DT + two probe quirks, Type-C set to peripheral | Boots from a USB host port (root on USB) and `/dev/hidg*` appears | ~40 lines |
 | **M4** | kvmd + ustreamer on 6.18, `no_out_endpoint` in effect | Web UI works, **MSD may become enableable** | None (userspace is ready) |
 | **M5** | hdmirx port: MUXPAD quirk + clock gate quirk + V4L2 API catch-up | 1080p60 capture | The biggest piece |
-| **M6** | mmc host driver | Back to "flash an SD card and go" | The biggest unknown |
+| **M6** | mmc host driver | Back to "flash an SD card and go" | ~~The biggest unknown~~ -- see the note below |
 
 After M0–M4 you already have **a PiKVM running on 6.18 LTS (no video, root on
 USB)**, and the MSD limitation may be gone. M5 is where the real cost of
 changing kernels sits, and M6 is what restores the project's intended
 deliverable.
+
+> **M6 re-scoped, 2026-09-22.** "Needs a datasheet or reverse-engineering the
+> BSP" (§ below, and `07-mainline.md` §7) is wrong. The RTD129x's SD
+> controller is a **Realtek RTS-family card reader core**, the same IP as the
+> PCIe and USB card readers mainline already drives, memory-mapped into the
+> SoC instead of sitting behind PCIe. The register names in the BSP's
+> `rtk-sdmmc-reg.h` are the rtsx ones at a constant offset:
+>
+> | BSP (`rtk-sdmmc-reg.h`) | mainline (`include/linux/rtsx_pci.h`) | delta |
+> |---|---|---|
+> | `SD_CONFIGURE1` 0x0180 | `SD_CFG1` 0xFDA0 | 0xFC20 |
+> | `SD_STATUS1` 0x0183 | `SD_STAT1` 0xFDA3 | 0xFC20 |
+> | `SD_BUS_STATUS` 0x0185 | `SD_BUS_STAT` 0xFDA5 | 0xFC20 |
+> | `SD_SAMPLE_POINT_CTL` 0x0187 | same 0xFDA7 | 0xFC20 |
+> | `SD_PUSH_POINT_CTL` 0x0188 | same 0xFDA8 | 0xFC20 |
+> | `CARD_EXIST` 0x011F | same 0xFD6F | 0xFC50 |
+> | `CARD_SELECT` 0x010E | same 0xFD5E | 0xFC50 |
+> | `CARD_CLOCK_EN_CTL` 0x0129 | `CARD_CLK_EN` 0xFD79 | 0xFC50 |
+>
+> Two register blocks, each at its own constant offset. So the SD protocol
+> logic, the tuning, and the bit meanings are all public already, in
+> `drivers/mmc/host/rtsx_pci_sdmmc.c`. What mainline lacks is a **platform
+> transport**: `drivers/misc/cardreader/` has PCI and USB and nothing else.
+>
+> The BSP's driver reaches the registers with plain `writeb`/`readb` on an
+> ioremapped base, which is simpler than the PCIe path's command queueing.
+> What has to come from the BSP rather than from rtsx is the SoC-specific
+> part: the DMA engine (`CR_SD_DMA_CTL1..3`, `CR_SD_SRAM_CTL`), the PLL
+> (`CR_PLL_SD1..4`) and the pad drive settings.
+>
+> Note also that M0–M3 needed neither the clk driver nor the pinctrl driver
+> that `07-mainline.md` §7 calls prerequisites for everything -- the
+> bootloader leaves the hardware initialised. The same is likely to hold
+> here, since u-boot has just used this controller to read the kernel.
 
 If the files from M0–M2 are cleaned up they are upstreamable: `ARM/REALTEK`
 accepts patches to `arch/arm64/boot/dts/realtek/`, and `rtd1395-bpi-m4.dts`
