@@ -142,6 +142,35 @@
  * `usb start` and left the clocks and port power on.
  */
 &rbus {
+	/*
+	 * The SD card slot.
+	 *
+	 * Only the card reader core is claimed. The BSP's node also maps the
+	 * CRT/PLL block, SB2 and the DMA engine shared with the eMMC
+	 * controller, but the first three overlap nodes rtd129x.dtsi already
+	 * has -- CRT is `crt: syscon@0`, which requests its region, so asking
+	 * for it here fails:
+	 *
+	 *   rtd129x-sdmmc 98000000.mmc: error -EBUSY: can't request region for
+	 *   resource [mem 0x98000000-0x980003ff]
+	 *
+	 * Nothing needs them yet: the clock generator this driver uses,
+	 * CR_SD_CKGEN_CTL, is inside the core at offset 0x78. When a later
+	 * stage needs the PLL it should reach it through a syscon phandle
+	 * rather than a second mapping.
+	 *
+	 * No clocks or resets either: there is no clk or reset driver for this
+	 * SoC in mainline and the driver treats both as optional, because the
+	 * bootloader has already used this controller to read the kernel.
+	 */
+	sdmmc: mmc@10400 {
+		compatible = "realtek,rtd1295-sdmmc";
+		reg = <0x10400 0x200>;
+		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+		bus-width = <4>;
+		cap-sd-highspeed;
+	};
+
 	/* Port 1: USB 2.0 host */
 	usb_u2host_usb2phy: usb-phy@13c14 {
 		compatible = "realtek,rtd1295-usb2phy";

@@ -1,0 +1,43 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] mmc: host: add the Realtek RTD129x SD host
+
+The driver itself is kept outside the kernel tree, in
+kernel/mainline/sdmmc-rtd129x.c, and copied in by
+scripts/build-kernel-mainline.sh -- same reasoning as the board .dts and the
+irq mux. These two build-system lines do not change, so they are a patch.
+
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+index c94ae4794..deaf12fee 100644
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -64,6 +64,18 @@ config MMC_PXA
+ 
+ 	  If unsure, say N.
+ 
++config MMC_SDMMC_RTD129X
++	tristate "Realtek RTD129x SD/MMC host"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	help
++	  Support for the SD card host on the Realtek RTD1295/RTD1296. The
++	  controller is the Realtek card reader core the rtsx drivers already
++	  handle, memory-mapped into the SoC instead of sitting behind PCIe or
++	  USB.
++
++	  Without it there is no SD card on these SoCs and the rootfs has to
++	  come from USB.
++
+ config MMC_SDHCI
+ 	tristate "Secure Digital Host Controller Interface support"
+ 	depends on HAS_DMA
+diff --git a/drivers/mmc/host/Makefile b/drivers/mmc/host/Makefile
+index 5057fea8a..a15cf00a1 100644
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -11,6 +11,7 @@ obj-$(CONFIG_MMC_PXA)		+= pxamci.o
+ obj-$(CONFIG_MMC_MXC)		+= mxcmmc.o
+ obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
+ obj-$(CONFIG_MMC_SDHCI)		+= sdhci.o
++obj-$(CONFIG_MMC_SDMMC_RTD129X)	+= sdmmc-rtd129x.o
+ obj-$(CONFIG_MMC_SDHCI_UHS2)	+= sdhci-uhs2.o
+ obj-$(CONFIG_MMC_SDHCI_PCI)	+= sdhci-pci.o
+ sdhci-pci-y			+= sdhci-pci-core.o sdhci-pci-o2micro.o sdhci-pci-arasan.o \

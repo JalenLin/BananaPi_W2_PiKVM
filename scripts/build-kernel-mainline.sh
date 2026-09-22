@@ -42,6 +42,7 @@ export LOCALVERSION=""
 cp /work/kernel/mainline/rtd1296-bananapi-w2.dts \
    arch/arm64/boot/dts/realtek/rtd1296-bananapi-w2.dts
 cp /work/kernel/mainline/irq-rtd129x.c drivers/irqchip/irq-rtd129x.c
+cp /work/kernel/mainline/sdmmc-rtd129x.c drivers/mmc/host/sdmmc-rtd129x.c
 cp "/work/kernel/mainline/realtek,rtd1295-irq-mux.yaml" \
    "Documentation/devicetree/bindings/interrupt-controller/realtek,rtd1295-irq-mux.yaml"
 

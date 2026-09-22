@@ -154,7 +154,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
-| **M6** | mmc host driver | not started |
+| **M6** | mmc host driver | **stage 1**, driver probes -- see §8. Blocked behind the corruption in §7 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -693,6 +693,35 @@ made things worse -- with `page_poison=1` the kernel died in
 `memblock_free_all` before reaching userspace, which is the poisoning
 touching pages it should not, not the bug being chased.
 
+Ruled out since, each with a boot:
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| SMP / the M1 spin-table | `nr_cpus=1` | Crashes identically, same faulting instruction |
+| Something writes RAM early | `memtest=4` | Four patterns over 1.6 GiB, **no bad address reported** |
+| Firmware ION heaps unreserved | reserved all of them, moved the kernel to 0x1c000000 | Helped, did not fix |
+| The audio core | `SKIP_BOOT_A=1` | PID 1 survives and systemd gets much further; child processes still die |
+| Corruption near the top of RAM | `mem=1G` | Fewer crashes, but **the bad value is still exactly 0x80000000**, which is outside memory entirely at 1 GiB |
+| Wrong DMA coherency | compared with the BSP | The BSP has no `dma-coherent` anywhere either, so mainline's non-coherent default matches it |
+
+The `mem=1G` result is the most informative: the corrupt pointer is the
+*constant* 0x80000000 whatever the memory size, so it is not a pointer that
+walked off the end of RAM. Something writes that value, or a cache line
+holding it, into live kernel structures.
+
+That, plus a clean early memtest, points away from "firmware scribbles on
+RAM" and towards stale DMA: a buffer freed and reused as slab memory, with
+cache maintenance going the wrong way, would produce exactly this -- plausible
+old data appearing inside allocator structures, crashes in a different place
+every boot, and sensitivity to anything that changes the layout.
+
+**The next test should remove USB from the picture entirely.** It is
+currently the boot media, the root filesystem and the only DMA engine at
+once, so it cannot be isolated. A kernel with a built-in initramfs
+(`CONFIG_INITRAMFS_SOURCE`) would run userspace with no storage attached at
+all; if that is stable under memory pressure, DMA is implicated, and if it is
+not, the cause is in the kernel configuration for this platform.
+
 ### The SD slot boots after all
 
 Unrelated to USB, but found on the way. With the card in the board's own slot
@@ -719,7 +748,73 @@ reader-swapping that every test cycle currently needs.
 
 ---
 
-## 8. Sources
+## 8. M6, stage 1
+
+### The controller is the rtsx card reader core
+
+See the note in §6 of `08-kernel-uplift.md`. In short: the BSP's
+`rtk-sdmmc-reg.h` register names are mainline's rtsx names at a constant
+offset per block, so `drivers/mmc/host/rtsx_pci_sdmmc.c` is a working
+reference for the SD protocol, the tuning and the bit meanings. What mainline
+lacks is a platform transport -- `drivers/misc/cardreader/` has PCI and USB
+and nothing else -- and the SoC-specific DMA engine, PLL and pad settings,
+which come from the BSP.
+
+`kernel/mainline/sdmmc-rtd129x.c` is the result. Stage 1 deliberately does
+card detection, command submission and responses only, including the 136-bit
+R2 that this core returns by DMA rather than in registers. Block data
+transfer is stage 2.
+
+### Only the core's own registers are mapped
+
+The BSP's node maps four windows: the CRT/PLL block, the card reader core,
+SB2, and the DMA engine shared with the eMMC controller. Three of those
+overlap nodes `rtd129x.dtsi` already owns, and `crt: syscon@0` requests its
+region, so asking for it again fails:
+
+```
+rtd129x-sdmmc 98000000.mmc: error -EBUSY: can't request region for resource [mem 0x98000000-0x980003ff]
+rtd129x-sdmmc 98000000.mmc: probe with driver rtd129x-sdmmc failed with error -16
+```
+
+Stage 1 needs none of them -- the clock generator it uses, `CR_SD_CKGEN_CTL`,
+is inside the core at offset 0x78 -- so the node claims one window. When a
+later stage needs the PLL it should come through a syscon phandle rather than
+a second mapping.
+
+Note for §3 of `08-kernel-uplift.md`: this is the second time an `-EBUSY`
+here has had nothing to do with the rbus `reg`. A `simple-bus` has no driver
+to request its region; nodes with drivers, like syscon, do.
+
+### Verified on hardware, 2026-09-23
+
+```
+rtd129x-sdmmc 98010400.mmc: RTD129x SD host, card present
+```
+
+The driver probes and the register mapping is right. `MMC_CAP_NEEDS_POLL` is
+set because the card detect line is not wired to an interrupt, so a card
+inserted after boot is noticed.
+
+It has **not** been shown to talk to a card: every boot so far has died in
+the corruption described in §7 before the MMC core finished scanning. Stage 1
+cannot be called done until a `mmc0: new ... SD card` line appears.
+
+(The "card present" above was printed with the slot believed empty, so either
+the `CARD_EXIST` bit or its polarity is wrong. That is a stage 1 bug to chase
+once the board stays up long enough to test it.)
+
+### What M6 is worth
+
+Every test cycle in this document costs a human two card swaps and about ten
+minutes, because the boot media is a card in a USB reader. Once the SD slot
+works that becomes "power on". The bootloader side is already proven -- §7
+records u-boot loading and running this kernel from the slot -- so M6 is the
+only thing between here and `CLAUDE.md`'s "flash a card and go".
+
+---
+
+## 9. Sources
 
 | Source | Used for |
 |--------|----------|
