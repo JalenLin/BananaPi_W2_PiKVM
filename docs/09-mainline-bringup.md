@@ -154,7 +154,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
-| **M6** | mmc host driver | **stage 1 done** 2026-09-23: the card is identified, CID and CSD read -- see §8. Stage 2 (data) next |
+| **M6** | mmc host driver | **stage 2 done** 2026-09-23: `mmcblk0` with its partitions, reads verified, 4-bit, ~5 MB/s -- see §8. Root on the card and speed next |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -753,7 +753,7 @@ reader-swapping that every test cycle currently needs.
 
 ---
 
-## 8. M6, stage 1
+## 8. M6, the SD slot
 
 ### The controller is the rtsx card reader core
 
@@ -857,6 +857,53 @@ What it took to get here, all found by reading registers from the
   clock off itself. Init now follows the BSP's `rtk_sdmmc_hw_reset()`.
 
 `CONFIG_DYNAMIC_DEBUG` is now on in `bpiw2.config` for this.
+
+### Stage 2: data, verified on hardware, 2026-09-23
+
+```
+mmc0: new SDHC card at address 0001
+mmcblk0: mmc0:0001 SD 29.1 GiB
+ mmcblk0: p1 p2
+```
+
+Both partitions mount. Reads are checked two ways, because the vendor
+initramfs has no checksum tool: the 7.5 MB gzip stream inside `uInitrd`
+passes `gzip -t` (CRC32 over all of it, after `drop_caches`), and so do 300
+`.gz` files from the rootfs. Mounting the ext4 partition replayed its journal,
+which exercised the write path with no errors. The MMC core runs the card at
+4-bit; 16 MiB of raw reads take about 3 s.
+
+Data follows the BSP's per-opcode table: CMD17/18 use AUTOREAD2/AUTOREAD1,
+CMD24/25 AUTOWRITE2/AUTOWRITE1 (the "1" modes send CMD12 themselves, so
+`mrq->stop` is never issued), and the short reads -- SCR, SD status, switch
+-- use NORMALREAD with `RSP64_SEL` and a 64-byte count. Everything goes
+through a 64 KiB coherent bounce buffer, so a request is one DMA.
+
+Three things stood between stage 1 and this:
+
+- **The interrupt is not the end of the transfer.** DMA_DONE, and END for
+  plain commands, can fire while the core is still clocking. The BSP's
+  `rtk_sdmmc_int_wait()` then polls `SD_TRANSFER` for END and IDLE before it
+  touches the core again. Without that the next command was queued onto a
+  busy core, and from then on every command timed out with no interrupt at
+  all -- `SD_TRANSFER` read 0xa8, started and never finishing. Any error now
+  also resets the core the way the BSP's `rtk_sdmmc_reset()` does, so one bad
+  transfer cannot wedge the ones after it.
+- **Data does not work behind the /256 divider.** At 400 kHz the SCR read
+  completed its DMA with 64 bytes of zeros, and `SD_TRANSFER` stopped at 0x2c
+  -- idle, END never set. That looks like DAT0 stuck low, but the pads are
+  untouched (mainline has no RTD1295 pinctrl, so u-boot's muxing stands). The
+  BSP simply never does it: it moves to 6.2 MHz as soon as CMD7 selects the
+  card. The driver now does the same for any data transfer that finds the
+  clock at 400 kHz, and the SCR came back as `02 b5 80 02`, the value u-boot
+  prints for the same card.
+- **The block layer wants at least a page per request.** With
+  `max_req_size` at 512 `blk_validate_limits()` warns and `mmcblk` fails with
+  -EINVAL, hence the multi-block modes and the larger buffer.
+
+Left for later: the clock ceiling (the "25 MHz" setting is the BSP's 0x2103,
+and the high-speed modes need the PLL and phase tuning), and scatter-gather
+DMA instead of the bounce copy.
 
 ### What M6 is worth
 

@@ -19,10 +19,11 @@
  * nodes the .dtsi already owns; anything needed from them later should come
  * through a syscon phandle.
  *
- * Stage 1: card detection, command submission and responses, including the
- * 136-bit R2 that this core returns by DMA rather than in registers. Block
- * data transfer is not implemented yet, so the card will be identified and
- * then fail when the core tries to read from it.
+ * Card detection, commands and responses -- including the 136-bit R2, which
+ * this core returns by DMA rather than in registers -- and data transfer,
+ * one 512-byte block per request through a coherent bounce buffer. Multi-block
+ * transfers (the core's auto-CMD12 modes) are not used yet, which is correct
+ * but slow.
  */
 
 #include <linux/bitops.h>
@@ -38,6 +39,8 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/scatterlist.h>
+#include <linux/sizes.h>
 #include <linux/unaligned.h>
 
 /* --- the card reader core, reg[1] ------------------------------------- */
@@ -77,6 +80,7 @@
 #define DMA_XFER		BIT(0)
 #define DDR_WR			BIT(1)	/* DMA writes to DDR, i.e. card -> memory */
 #define RSP17_SEL		BIT(4)	/* this transfer is an R2 response */
+#define RSP64_SEL		BIT(5)	/* a short read: SCR, SD status, switch */
 
 /*
  * CR_SD_ISR / CR_SD_ISREN. Bit 0 is not a status bit but the value to write:
@@ -132,7 +136,13 @@
 /* SD_TRANSFER */
 #define SD_TRANSFER_START	BIT(7)
 #define SD_TRANSFER_END		BIT(6)
+#define SD_TRANSFER_IDLE	BIT(5)
 #define SD_TRANSFER_ERR		BIT(4)
+#define SD_AUTOWRITE1		0x09	/* command, data out, then CMD12 */
+#define SD_AUTOWRITE2		0x0a	/* command, then data out */
+#define SD_NORMALREAD		0x0c	/* command, then a short data read */
+#define SD_AUTOREAD1		0x0d	/* command, data in, then CMD12 */
+#define SD_AUTOREAD2		0x0e	/* command, then data in */
 #define SD_SENDCMDGETRSP	0x08
 
 /* SD_STATUS1 */
@@ -141,8 +151,13 @@
 #define SD_CRC_WRITE_ERR	BIT(5)
 #define SD_CRC_TIMEOUT		BIT(1)
 
-/* An R2 comes back as 16 bytes plus a CRC byte, DMA'd into memory. */
+/*
+ * One bounce buffer serves both the R2 response DMA and block data. The core
+ * DMAs a whole 512-byte unit even for short results. Data requests are capped
+ * at the buffer size, so a request is always one DMA.
+ */
 #define RTD129X_RSP17_LEN	0x200
+#define RTD129X_BUF_LEN		SZ_64K
 
 struct rtd129x_sdmmc {
 	struct device		*dev;
@@ -303,15 +318,51 @@ static void rtd129x_read_response(struct rtd129x_sdmmc *host,
 		        readb(host->sd + SD_CMD0 + 4);
 }
 
+/*
+ * Abort whatever the core is doing and return it to idle, as the BSP's
+ * rtk_sdmmc_reset() does. Without this a transfer that never finished leaves
+ * SD_TRANSFER started, and every later command times out.
+ */
+static void rtd129x_reset(struct rtd129x_sdmmc *host)
+{
+	writel(0, host->sd + CR_SD_DMA_CTL3);
+	writel(ISR_ALL, host->sd + CR_SD_ISREN);
+	writel(ISR_ALL, host->sd + CR_SD_ISR);
+	writeb(0, host->sd + SD_TRANSFER);
+	writeb(0xff, host->sd + CR_CARD_STOP);
+	writeb(0x00, host->sd + CR_CARD_STOP);
+	rtd129x_sync(host);
+}
+
 static int rtd129x_wait(struct rtd129x_sdmmc *host, unsigned int ms)
 {
-	u8 status1;
+	unsigned long deadline;
+	u8 status1, xfer;
 
 	if (!wait_for_completion_timeout(&host->done, msecs_to_jiffies(ms)))
 		return -ETIMEDOUT;
 
-	if (!(host->isr & ISR_CARD_ERR) &&
-	    !(readb(host->sd + SD_TRANSFER) & SD_TRANSFER_ERR))
+	/*
+	 * The interrupt can come before the transfer state machine is done:
+	 * DMA_DONE in particular fires while the core is still clocking the
+	 * rest of the block. The BSP's rtk_sdmmc_int_wait() polls for END and
+	 * IDLE before it touches the core again.
+	 */
+	deadline = jiffies + msecs_to_jiffies(300);
+	for (;;) {
+		rtd129x_sync(host);
+		xfer = readb(host->sd + SD_TRANSFER);
+		if (xfer & SD_TRANSFER_ERR)
+			break;
+		if ((xfer & (SD_TRANSFER_END | SD_TRANSFER_IDLE)) ==
+		    (SD_TRANSFER_END | SD_TRANSFER_IDLE))
+			break;
+		if (time_after(jiffies, deadline))
+			return -ETIMEDOUT;
+		udelay(10);
+	}
+
+	if (!(host->isr & ISR_CARD_ERR) && !(xfer & SD_TRANSFER_ERR))
 		return 0;
 
 	/* No response at all is how an SD 1.x card answers CMD8. */
@@ -376,13 +427,134 @@ static int rtd129x_send_cmd(struct rtd129x_sdmmc *host,
 
 	ret = rtd129x_wait(host, 1000);
 	if (ret) {
-		dev_dbg(host->dev, "cmd%u: %d (isr 0x%02x, status1 0x%02x)\n",
+		dev_dbg(host->dev, "cmd%u: %d (isr 0x%02x, status1 0x%02x, xfer 0x%02x)\n",
 			cmd->opcode, ret, host->isr,
-			readb(host->sd + SD_STATUS1));
+			readb(host->sd + SD_STATUS1),
+			readb(host->sd + SD_TRANSFER));
+		rtd129x_reset(host);
 		return ret;
 	}
 
 	rtd129x_read_response(host, cmd, is_r2);
+
+	return 0;
+}
+
+/*
+ * A command with data, as the BSP's rtk_sdmmc_stream_cmd() does it: the
+ * command goes out, then the core moves the data by DMA. Full 512-byte blocks
+ * use the "command then data" modes; the short reads the MMC core issues
+ * during setup (SCR, SD status, switch, number of written blocks) use
+ * NORMALREAD with RSP64_SEL and a 64-byte count. Below 64 bytes the core still
+ * clocks 64, so the CRC16 cannot match and is not checked -- that is the
+ * BSP's 0x41 for ACMD51.
+ */
+static int rtd129x_xfer(struct rtd129x_sdmmc *host, struct mmc_request *mrq)
+{
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	bool read = data->flags & MMC_DATA_READ;
+	size_t len = data->blksz * data->blocks;
+	u16 byte_cnt, blk_cnt;
+	u32 dma3;
+	u8 cfg2, tm;
+	int ret;
+
+	if (len > RTD129X_BUF_LEN)
+		return -EINVAL;
+
+	/*
+	 * The data path does not work behind the /256 divider: a short read
+	 * at 400 kHz lands as zeros and the core never flags END. The BSP
+	 * never tries -- it moves to 6.2 MHz as soon as CMD7 selects the card
+	 * (rtk_sdmmc_request()). Data only flows once a card is selected, so
+	 * leaving the identification clock behind here is within the spec.
+	 */
+	if (host->mmc->ios.clock <= 400000)
+		rtd129x_set_clock(host, 6200000);
+
+	if (data->blksz == 512) {
+		byte_cnt = 512;
+		blk_cnt = data->blocks;
+		dma3 = 0;
+		/*
+		 * The multi-block modes send CMD12 themselves, so mrq->stop
+		 * is never issued separately.
+		 */
+		if (read)
+			tm = data->blocks > 1 ? SD_AUTOREAD1 : SD_AUTOREAD2;
+		else
+			tm = data->blocks > 1 ? SD_AUTOWRITE1 : SD_AUTOWRITE2;
+		cfg2 = SD_RESP_TYPE_6B;
+	} else {
+		if (!read)
+			return -EINVAL;
+		byte_cnt = 0x40;
+		blk_cnt = 1;
+		dma3 = RSP64_SEL;
+		tm = SD_NORMALREAD;
+		cfg2 = SD_RESP_TYPE_6B;
+		if (data->blksz < 0x40)
+			cfg2 |= SD_CRC16_CAL_DIS;
+	}
+
+	if (!read)
+		sg_copy_to_buffer(data->sg, data->sg_len, host->buf, len);
+
+	writeb(cfg2, host->sd + SD_CONFIGURE2);
+	writeb(SD_RESP_CHK_EN | SD_CMD_RSP_TO, host->sd + SD_CONFIGURE3);
+
+	writeb(0x40 | cmd->opcode,      host->sd + SD_CMD0);
+	writeb((cmd->arg >> 24) & 0xff, host->sd + SD_CMD0 + 1);
+	writeb((cmd->arg >> 16) & 0xff, host->sd + SD_CMD0 + 2);
+	writeb((cmd->arg >> 8) & 0xff,  host->sd + SD_CMD0 + 3);
+	writeb(cmd->arg & 0xff,         host->sd + SD_CMD0 + 4);
+	writeb(0,                       host->sd + SD_CMD0 + 5);
+
+	writeb(byte_cnt & 0xff, host->sd + SD_BYTE_CNT_L);
+	writeb(byte_cnt >> 8,   host->sd + SD_BYTE_CNT_H);
+	writeb(blk_cnt & 0xff,  host->sd + SD_BLOCK_CNT_L);
+	writeb(blk_cnt >> 8,    host->sd + SD_BLOCK_CNT_H);
+
+	writel(host->buf_phys / 8, host->sd + CR_SD_DMA_CTL1);
+	writel(blk_cnt, host->sd + CR_SD_DMA_CTL2);
+	writel(dma3 | (read ? DDR_WR : 0) | DMA_XFER, host->sd + CR_SD_DMA_CTL3);
+
+	/* Reads are done when the data has landed; writes when the card acks. */
+	writel(ISR_ALL, host->sd + CR_SD_ISR);
+	writel(ISR_ALL, host->sd + CR_SD_ISREN);
+	reinit_completion(&host->done);
+	host->isr = 0;
+	host->wait_for = read ? ISR_DMA_DONE : ISR_CARD_END;
+	writel(ISR_WRITE_DATA | ISR_CARD_ERR | host->wait_for,
+	       host->sd + CR_SD_ISREN);
+
+	writeb(SD_TRANSFER_START | tm, host->sd + SD_TRANSFER);
+	rtd129x_sync(host);
+
+	ret = rtd129x_wait(host, 2000);
+	writel(0, host->sd + CR_SD_DMA_CTL3);
+	if (ret) {
+		dev_dbg(host->dev, "cmd%u data %zu%s: %d (isr 0x%02x, status1 0x%02x, xfer 0x%02x)\n",
+			cmd->opcode, len, read ? "r" : "w", ret, host->isr,
+			readb(host->sd + SD_STATUS1),
+			readb(host->sd + SD_TRANSFER));
+		rtd129x_reset(host);
+		return ret;
+	}
+
+	/*
+	 * After the automatic CMD12 the response registers hold its R1b, not
+	 * this command's; the BSP leaves the response alone in those modes.
+	 */
+	if (tm != SD_AUTOREAD1 && tm != SD_AUTOWRITE1)
+		rtd129x_read_response(host, cmd, false);
+	if (read && data->blksz != 512)
+		dev_dbg(host->dev, "cmd%u short read %u: %*ph\n",
+			cmd->opcode, data->blksz, 64, host->buf);
+	if (read)
+		sg_copy_from_buffer(data->sg, data->sg_len, host->buf, len);
+	data->bytes_xfered = len;
 
 	return 0;
 }
@@ -399,10 +571,9 @@ static void rtd129x_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	if (mrq->data) {
-		/* Stage 2. */
-		dev_dbg(host->dev, "cmd%u: data transfer not implemented\n",
-			mrq->cmd->opcode);
-		mrq->cmd->error = -ENOTSUPP;
+		ret = rtd129x_xfer(host, mrq);
+		mrq->cmd->error = ret;
+		mrq->data->error = ret;
 		mmc_request_done(mmc, mrq);
 		return;
 	}
@@ -555,7 +726,7 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_free;
 
-	host->buf = dmam_alloc_coherent(dev, RTD129X_RSP17_LEN,
+	host->buf = dmam_alloc_coherent(dev, RTD129X_BUF_LEN,
 					&host->buf_phys, GFP_KERNEL);
 	if (!host->buf) {
 		ret = -ENOMEM;
@@ -586,10 +757,10 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 	 */
 	mmc->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_NEEDS_POLL;
 	mmc->max_blk_size = 512;
-	mmc->max_blk_count = 1;
-	mmc->max_segs = 1;
-	mmc->max_seg_size = 512;
-	mmc->max_req_size = 512;
+	mmc->max_blk_count = RTD129X_BUF_LEN / 512;
+	mmc->max_segs = 128;		/* gathered into the bounce buffer */
+	mmc->max_seg_size = RTD129X_BUF_LEN;
+	mmc->max_req_size = RTD129X_BUF_LEN;
 
 	platform_set_drvdata(pdev, host);
 
