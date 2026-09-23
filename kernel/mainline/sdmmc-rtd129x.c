@@ -33,6 +33,7 @@
 #include <linux/io.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
+#include <linux/mmc/sd.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -46,19 +47,25 @@
 #define CR_SD_DMA_CTL3		0x000c	/* direction and go */
 #define CR_SD_ISR		0x0024
 #define CR_SD_ISREN		0x0028
+#define CR_SD_PAD_CTL		0x0074	/* 0 = 3.3 V signalling */
 #define CR_SD_CKGEN_CTL		0x0078
 #define CR_CARD_STOP		0x0103
 #define CR_CARD_OE		0x0104
 #define CARD_SELECT		0x010e
 #define CARD_EXIST		0x011f
+#define CR_SD_INT_EN		0x0120	/* card insert/remove interrupt enable */
+#define CARD_INT_PEND		0x0121	/* ... and pending, write one to clear */
 #define CARD_CLOCK_EN_CTL	0x0129
 
 #define SD_CONFIGURE1		0x0180
 #define SD_CONFIGURE2		0x0181
 #define SD_CONFIGURE3		0x0182
 #define SD_STATUS1		0x0183
+#define SD_STATUS2		0x0184
 #define SD_BUS_STATUS		0x0185
 #define SD_CMD_MODE		0x0186
+#define SD_SAMPLE_POINT_CTL	0x0187
+#define SD_PUSH_POINT_CTL	0x0188
 #define SD_CMD0			0x0189	/* command out, response back */
 #define SD_BYTE_CNT_L		0x018f
 #define SD_BYTE_CNT_H		0x0190
@@ -68,39 +75,59 @@
 
 /* CR_SD_DMA_CTL3 */
 #define DMA_XFER		BIT(0)
-#define DDR_WR			BIT(1)	/* clear = card to memory */
+#define DDR_WR			BIT(1)	/* DMA writes to DDR, i.e. card -> memory */
 #define RSP17_SEL		BIT(4)	/* this transfer is an R2 response */
 
-/* CR_SD_ISR / CR_SD_ISREN */
+/*
+ * CR_SD_ISR / CR_SD_ISREN. Bit 0 is not a status bit but the value to write:
+ * a write sets every other bit given in the mask to bit 0's value. So
+ * 0x07 enables END and ERR, 0x16 clears END, ERR and DMA_DONE -- which is
+ * both "disable all" for ISREN and "acknowledge all" for ISR. Writing back
+ * what was read, as a plain W1C register would want, re-asserts it instead.
+ */
+#define ISR_WRITE_DATA		BIT(0)
 #define ISR_CARD_END		BIT(1)
 #define ISR_CARD_ERR		BIT(2)
 #define ISR_DMA_DONE		BIT(4)
+#define ISR_ALL			(ISR_CARD_END | ISR_CARD_ERR | ISR_DMA_DONE)
 
-/* CARD_EXIST */
+/* CARD_EXIST, CR_SD_INT_EN, CARD_INT_PEND -- rtsx's XD_INT/MS_INT/SD_INT */
 #define SD_EXISTENCE		BIT(2)
+#define CARD_INT_SD		BIT(2)
+#define CARD_INT_ALL		(BIT(4) | BIT(3) | BIT(2))
 
-/* CARD_SELECT */
+/* CARD_SELECT, CR_CARD_OE, CARD_CLOCK_EN_CTL */
 #define SD_MOD_SEL		0x02
+#define SD_MOD_OE		BIT(2)
+#define SD_MOD_CLK_EN		BIT(2)
 
 /* SD_CONFIGURE1 */
-#define SD_BUS_WIDTH_MASK	0x03
-#define SD_BUS_WIDTH_1		0x00
-#define SD_BUS_WIDTH_4		0x01
-#define SD_BUS_WIDTH_8		0x02
+#define SD_CFG1_BUS_WIDTH_MASK	0x03
+#define SD_CFG1_BUS_WIDTH_1		0x00
+#define SD_CFG1_BUS_WIDTH_4		0x01
+#define SD_CFG1_BUS_WIDTH_8		0x02
 #define SD_CLOCK_DIV_MASK	(0x03 << 6)
 #define SD_CLOCK_DIV_256	BIT(6)
 #define SD_CLOCK_DIV_EN		BIT(7)
 
-/* SD_CONFIGURE2 -- response length the core should clock in */
+/*
+ * SD_CONFIGURE2. Names from the BSP's rtk-sdmmc-reg.h. Note that bit 7 stops
+ * the core *generating* the CRC7 of the outgoing command, which no card will
+ * accept; the bit that stops it *checking* the response's CRC7 is bit 2.
+ */
+#define SD_CRC7_CAL_DIS		BIT(7)
+#define SD_CRC16_CAL_DIS	BIT(6)
+#define SD_WAIT_BUSY_EN		BIT(3)
+#define SD_CRC7_CHK_DIS		BIT(2)
 #define SD_RESP_TYPE_NONE	0x00
 #define SD_RESP_TYPE_6B		0x01
 #define SD_RESP_TYPE_17B	0x02
-#define SD_NO_CHECK_CRC7	BIT(7)
-#define SD_NO_CHECK_WAIT_BUSY	BIT(6)
 
 /* SD_CONFIGURE3 */
 #define SD_CMD_RSP_TO		BIT(0)
 #define SD_RESP_CHK_EN		BIT(2)
+
+#define SD_CMD5			0x018e	/* the 17th byte of an R2 */
 
 /* SD_TRANSFER */
 #define SD_TRANSFER_START	BIT(7)
@@ -126,6 +153,7 @@ struct rtd129x_sdmmc {
 	int			irq;
 	struct completion	done;
 	u32			isr;
+	u32			wait_for;	/* ISR bit that ends this command */
 
 	void			*buf;
 	dma_addr_t		buf_phys;
@@ -183,16 +211,16 @@ static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct rtd129x_sdmmc *host = mmc_priv(mmc);
 	u8 cfg1;
 
-	cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_BUS_WIDTH_MASK;
+	cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_CFG1_BUS_WIDTH_MASK;
 	switch (ios->bus_width) {
 	case MMC_BUS_WIDTH_8:
-		cfg1 |= SD_BUS_WIDTH_8;
+		cfg1 |= SD_CFG1_BUS_WIDTH_8;
 		break;
 	case MMC_BUS_WIDTH_4:
-		cfg1 |= SD_BUS_WIDTH_4;
+		cfg1 |= SD_CFG1_BUS_WIDTH_4;
 		break;
 	default:
-		cfg1 |= SD_BUS_WIDTH_1;
+		cfg1 |= SD_CFG1_BUS_WIDTH_1;
 		break;
 	}
 	writeb(cfg1, host->sd + SD_CONFIGURE1);
@@ -203,33 +231,41 @@ static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 }
 
 /*
- * SD_CONFIGURE2 tells the core how many bits to clock in after the command,
- * and whether to check the CRC and the busy line. The mapping is the same one
- * rtsx_pci_sdmmc.c makes from MMC_RSP_*.
+ * SD_CONFIGURE2/3 for a command. This is the rule behind the BSP's per-opcode
+ * table in rtk_sdmmc_set_rspparam(): CRC16 calculation off for anything that
+ * moves no data, the response length, CRC7 checking off where the response
+ * has no CRC (R3), busy-waiting for R1b, and response checking in CONFIGURE3
+ * only where there is a CRC to check. CMD0 and CMD8 take CONFIGURE3 = 0 there
+ * too.
  */
-static int rtd129x_rsp_cfg(struct mmc_command *cmd, u8 *cfg2, bool *is_r2)
+static void rtd129x_rsp_cfg(struct mmc_command *cmd, u8 *cfg2, u8 *cfg3,
+			    bool *is_r2)
 {
 	*is_r2 = false;
 
 	if (!(cmd->flags & MMC_RSP_PRESENT)) {
-		*cfg2 = SD_RESP_TYPE_NONE | SD_NO_CHECK_CRC7 |
-			SD_NO_CHECK_WAIT_BUSY;
-		return 0;
+		*cfg2 = 0x74;			/* the BSP's value for CMD0 */
+		*cfg3 = 0;
+		return;
 	}
 
 	if (cmd->flags & MMC_RSP_136) {
-		*cfg2 = SD_RESP_TYPE_17B;
+		*cfg2 = SD_CRC16_CAL_DIS | SD_RESP_TYPE_17B;
+		*cfg3 = SD_RESP_CHK_EN | SD_CMD_RSP_TO;
 		*is_r2 = true;
-		return 0;
+		return;
 	}
 
-	*cfg2 = SD_RESP_TYPE_6B;
+	*cfg2 = SD_CRC16_CAL_DIS | SD_RESP_TYPE_6B;
 	if (!(cmd->flags & MMC_RSP_CRC))
-		*cfg2 |= SD_NO_CHECK_CRC7;
-	if (!(cmd->flags & MMC_RSP_BUSY))
-		*cfg2 |= SD_NO_CHECK_WAIT_BUSY;
+		*cfg2 |= SD_CRC7_CHK_DIS;
+	if (cmd->flags & MMC_RSP_BUSY)
+		*cfg2 |= SD_WAIT_BUSY_EN;
 
-	return 0;
+	if ((cmd->flags & MMC_RSP_CRC) && cmd->opcode != SD_SEND_IF_COND)
+		*cfg3 = SD_RESP_CHK_EN | SD_CMD_RSP_TO;
+	else
+		*cfg3 = 0;
 }
 
 static void rtd129x_read_response(struct rtd129x_sdmmc *host,
@@ -242,15 +278,18 @@ static void rtd129x_read_response(struct rtd129x_sdmmc *host,
 
 	if (is_r2) {
 		/*
-		 * The DMA'd buffer holds the 17 response bytes starting at
-		 * offset 0: one byte of 0x3f, then the 16 payload bytes. The
-		 * MMC core wants the payload as four big-endian words with the
-		 * leading byte dropped.
+		 * Sixteen of the seventeen response bytes are DMA'd: the 0x3f
+		 * header, then 15 payload bytes. The last one -- CRC7 and the
+		 * end bit -- stays in SD_CMD5. The MMC core wants the payload
+		 * as four big-endian words. This is what the BSP's
+		 * rtk_sdmmc_read_rsp() + rtk_sdmmc_swap_data() come to.
 		 */
-		const u8 *p = host->buf + 1;
+		const u8 *p = host->buf;
+		u8 last[4] = { p[13], p[14], p[15], readb(host->sd + SD_CMD5) };
 
-		for (i = 0; i < 4; i++)
-			cmd->resp[i] = get_unaligned_be32(p + i * 4);
+		for (i = 0; i < 3; i++)
+			cmd->resp[i] = get_unaligned_be32(p + 1 + i * 4);
+		cmd->resp[3] = get_unaligned_be32(last);
 		return;
 	}
 
@@ -266,27 +305,33 @@ static void rtd129x_read_response(struct rtd129x_sdmmc *host,
 
 static int rtd129x_wait(struct rtd129x_sdmmc *host, unsigned int ms)
 {
+	u8 status1;
+
 	if (!wait_for_completion_timeout(&host->done, msecs_to_jiffies(ms)))
 		return -ETIMEDOUT;
 
-	if (host->isr & ISR_CARD_ERR)
-		return -EILSEQ;
+	if (!(host->isr & ISR_CARD_ERR) &&
+	    !(readb(host->sd + SD_TRANSFER) & SD_TRANSFER_ERR))
+		return 0;
 
-	return 0;
+	/* No response at all is how an SD 1.x card answers CMD8. */
+	status1 = readb(host->sd + SD_STATUS1);
+	if (status1 & SD_CRC_TIMEOUT)
+		return -ETIMEDOUT;
+	return -EILSEQ;
 }
 
 static int rtd129x_send_cmd(struct rtd129x_sdmmc *host,
 			    struct mmc_command *cmd)
 {
-	u8 cfg2;
+	u8 cfg2, cfg3;
 	bool is_r2;
 	int ret;
 
-	rtd129x_rsp_cfg(cmd, &cfg2, &is_r2);
+	rtd129x_rsp_cfg(cmd, &cfg2, &cfg3, &is_r2);
 
-	writeb(readb(host->sd + SD_CONFIGURE1), host->sd + SD_CONFIGURE1);
 	writeb(cfg2, host->sd + SD_CONFIGURE2);
-	writeb(SD_CMD_RSP_TO | SD_RESP_CHK_EN, host->sd + SD_CONFIGURE3);
+	writeb(cfg3, host->sd + SD_CONFIGURE3);
 
 	writeb(0x40 | cmd->opcode,       host->sd + SD_CMD0);
 	writeb((cmd->arg >> 24) & 0xff,  host->sd + SD_CMD0 + 1);
@@ -295,8 +340,19 @@ static int rtd129x_send_cmd(struct rtd129x_sdmmc *host,
 	writeb(cmd->arg & 0xff,          host->sd + SD_CMD0 + 4);
 	writeb(0,                        host->sd + SD_CMD0 + 5);
 
+	/*
+	 * Acknowledge anything left over, then enable only what ends this
+	 * command: END and ERR normally, DMA_DONE and ERR when the result
+	 * arrives by DMA -- END fires before the data has landed. This is the
+	 * BSP's rtk_sdmmc_cpu_wait().
+	 */
+	writel(ISR_ALL, host->sd + CR_SD_ISR);
+	writel(ISR_ALL, host->sd + CR_SD_ISREN);
 	reinit_completion(&host->done);
 	host->isr = 0;
+	host->wait_for = is_r2 ? ISR_DMA_DONE : ISR_CARD_END;
+	writel(ISR_WRITE_DATA | ISR_CARD_ERR | host->wait_for,
+	       host->sd + CR_SD_ISREN);
 
 	if (is_r2) {
 		/*
@@ -312,7 +368,7 @@ static int rtd129x_send_cmd(struct rtd129x_sdmmc *host,
 
 		writel(host->buf_phys / 8, host->sd + CR_SD_DMA_CTL1);
 		writel(1, host->sd + CR_SD_DMA_CTL2);
-		writel(RSP17_SEL | DMA_XFER, host->sd + CR_SD_DMA_CTL3);
+		writel(RSP17_SEL | DDR_WR | DMA_XFER, host->sd + CR_SD_DMA_CTL3);
 	}
 
 	writeb(SD_TRANSFER_START | SD_SENDCMDGETRSP, host->sd + SD_TRANSFER);
@@ -367,15 +423,26 @@ static irqreturn_t rtd129x_irq(int irq, void *dev_id)
 {
 	struct rtd129x_sdmmc *host = dev_id;
 	u32 isr;
+	u8 pend;
 
-	isr = readl(host->sd + CR_SD_ISR);
-	if (!(isr & (ISR_CARD_END | ISR_CARD_ERR | ISR_DMA_DONE)))
-		return IRQ_NONE;
+	/*
+	 * Card insert/remove shares the line. It is disabled at init because
+	 * detection is polled, but if it ever latches, acknowledge it rather
+	 * than leave a level interrupt asserted.
+	 */
+	pend = readb(host->sd + CARD_INT_PEND) & CARD_INT_ALL;
+	if (pend)
+		writeb(pend, host->sd + CARD_INT_PEND);
 
-	writel(isr, host->sd + CR_SD_ISR);	/* write one to clear */
+	isr = readl(host->sd + CR_SD_ISR) & ISR_ALL;
+	if (!isr)
+		return pend ? IRQ_HANDLED : IRQ_NONE;
+
+	/* Bit 0 clear: this clears the given bits, see ISR_WRITE_DATA. */
+	writel(isr, host->sd + CR_SD_ISR);
 
 	host->isr |= isr;
-	if (isr & (ISR_CARD_END | ISR_CARD_ERR))
+	if (isr & (host->wait_for | ISR_CARD_ERR))
 		complete(&host->done);
 
 	return IRQ_HANDLED;
@@ -383,17 +450,61 @@ static irqreturn_t rtd129x_irq(int irq, void *dev_id)
 
 static void rtd129x_hw_init(struct rtd129x_sdmmc *host)
 {
-	/* Select the SD card slot and take the core out of its idle state. */
+	/*
+	 * The BSP's rtk_sdmmc_hw_reset(). CARD_CLOCK_EN_CTL matters most: the
+	 * SD_* registers (0x180 up) are clocked by the SD module, and with its
+	 * clock off they read back their last value and silently drop every
+	 * write -- the CARD_* registers below 0x180 and the CR_SD_* ones below
+	 * 0x100 keep working, which makes it look like a mapping problem. An
+	 * earlier version of this driver wrote 0x3b here, copied from the
+	 * BSP's card-removal path, and switched that clock off itself.
+	 */
+	writeb(0xff, host->sd + CR_CARD_STOP);		/* stop, go idle */
+	writeb(0x00, host->sd + CR_CARD_STOP);
 	writeb(SD_MOD_SEL, host->sd + CARD_SELECT);
-	writeb(0xff, host->sd + CR_CARD_STOP);
-	writeb(0x3b, host->sd + CARD_CLOCK_EN_CTL);
+	writeb(SD_MOD_OE, host->sd + CR_CARD_OE);
+	writeb(SD_MOD_CLK_EN, host->sd + CARD_CLOCK_EN_CTL);
+	writeb(0xd0, host->sd + SD_CONFIGURE1);		/* /256, 1 bit, FIFO reset */
+	writeb(0x00, host->sd + SD_STATUS2);
+	writel(0, host->sd + CR_SD_PAD_CTL);		/* 3.3 V */
+	writeb(0x00, host->sd + SD_SAMPLE_POINT_CTL);
+	writeb(0x00, host->sd + SD_PUSH_POINT_CTL);
 	rtd129x_sync(host);
 
+	/*
+	 * Everything acknowledged and disabled (see ISR_WRITE_DATA); each
+	 * command enables what it waits for. u-boot has just used this core
+	 * and may have left sources enabled and pending.
+	 */
 	writel(0, host->sd + CR_SD_DMA_CTL3);
-	writel(ISR_CARD_END | ISR_CARD_ERR | ISR_DMA_DONE, host->sd + CR_SD_ISR);
-	writel(ISR_CARD_END | ISR_CARD_ERR | ISR_DMA_DONE,
-	       host->sd + CR_SD_ISREN);
+	writel(ISR_ALL, host->sd + CR_SD_ISR);
+	writel(ISR_ALL, host->sd + CR_SD_ISREN);
+
+	/*
+	 * The card insert/remove interrupt drives the same GIC line, and
+	 * u-boot leaves it enabled -- with a card in the slot it is pending
+	 * from the moment the handler is installed, and the kernel disables
+	 * the line after 100000 unhandled interrupts:
+	 *
+	 *   irq 17: nobody cared ... Disabling IRQ #17
+	 *
+	 * (CR_SD_INT_EN = 0x04, CARD_INT_PEND = 0x04 read with devmem.)
+	 * Detection is polled here, so switch it off and clear what is
+	 * pending the way rtsx_usb.c does. The BSP never touches either
+	 * register; its handler returns IRQ_HANDLED unconditionally, which
+	 * hides a storm rather than stopping one.
+	 *
+	 * Whether CR_SD_INT_EN takes a plain value or the ISR-style mask with
+	 * a data bit is not documented, so write zero and, if the SD bit is
+	 * still set, clear it the other way.
+	 */
+	writeb(0, host->sd + CR_SD_INT_EN);
+	if (readb(host->sd + CR_SD_INT_EN) & CARD_INT_SD)
+		writeb(CARD_INT_SD, host->sd + CR_SD_INT_EN);
+	writeb(CARD_INT_ALL, host->sd + CARD_INT_PEND);
 	rtd129x_sync(host);
+	dev_dbg(host->dev, "card int en 0x%02x pend 0x%02x\n",
+		readb(host->sd + CR_SD_INT_EN), readb(host->sd + CARD_INT_PEND));
 }
 
 static int rtd129x_sdmmc_probe(struct platform_device *pdev)
@@ -501,7 +612,7 @@ static void rtd129x_sdmmc_remove(struct platform_device *pdev)
 	struct rtd129x_sdmmc *host = platform_get_drvdata(pdev);
 
 	mmc_remove_host(host->mmc);
-	writel(0, host->sd + CR_SD_ISREN);
+	writel(ISR_ALL, host->sd + CR_SD_ISREN);	/* disable all */
 	mmc_free_host(host->mmc);
 }
 

@@ -154,7 +154,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
-| **M6** | mmc host driver | **stage 1**, driver probes; the card is not identified yet -- see §8 |
+| **M6** | mmc host driver | **stage 1 done** 2026-09-23: the card is identified, CID and CSD read -- see §8. Stage 2 (data) next |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -801,22 +801,62 @@ The driver probes and the register mapping is right. `MMC_CAP_NEEDS_POLL` is
 set because the card detect line is not wired to an interrupt, so a card
 inserted after boot is noticed.
 
-It has **not** been shown to talk to a card. Booted from the SD slot by
-u-boot, with the card itself sitting in the slot, `mmc0` registers but no card
-appears under `/sys/bus/mmc/devices/`, and the host's interrupt ran away:
+It now talks to the card. Booted from the SD slot by u-boot, with that card
+in the slot and the driver's `dev_dbg` plus the MMC core's switched on through
+`/sys/kernel/debug/dynamic_debug/control`:
 
 ```
- 17:     100000          0          0          0    GICv2  76 Level     98010400.mmc
+mmc0: starting CMD0 arg 00000000 flags 000000c0
+mmc0: req done (CMD0): 0
+mmc0: starting CMD8 arg 000001aa flags 000002f5
+mmc0: req done (CMD8): 0: 000001aa                           <- SD 2.0
+mmc0: starting CMD41 arg 48300000 flags 000000e1
+mmc0: req done (CMD41): 0: c0ff8000                          <- ready, SDHC
+mmc0: starting CMD2 arg 00000000 flags 00000007
+mmc0: req done (CMD2): 0: 744a6053 44000000 00000000 05011821 <- CID, by DMA
+mmc0: starting CMD3 arg 00000000 flags 00000075
+mmc0: req done (CMD3): 0: 00010520                           <- RCA 1
+mmc0: starting CMD9 arg 00010000 flags 00000007
+mmc0: req done (CMD9): 0: 400e0032 5b590000 e9277f80 0a4000cb <- CSD, by DMA
+mmc0: starting CMD7 arg 00010000 flags 00000015
+mmc0: req done (CMD7): 0
+mmc0: starting CMD51 arg 00000000 flags 000000b5
+rtd129x-sdmmc 98010400.mmc: cmd51: data transfer not implemented
 ```
 
-100000 is the kernel giving up on an interrupt line whose handler keeps
-returning `IRQ_NONE`: some status bit this driver neither recognises nor
-clears stays asserted. That is the next thing to fix. Stage 1 cannot be called
-done until a `mmc0: new ... SD card` line appears.
+CMD51 (read the SCR) is the first command that moves data, and stage 1 stops
+there by design. The CSD is the proof that the R2 path is right end to end:
+`C_SIZE` = 0xe927, so (0xe927 + 1) x 512 KiB = 29.1 GiB, which is this card.
 
-The u-boot path also makes this the fast test loop for M6: the kernel boots in
-seconds, finds no `/dev/sda2`, and the vendor initramfs drops to an
-`(initramfs)` shell on the console, with `dmesg` and `/sys` to look at.
+What it took to get here, all found by reading registers from the
+`(initramfs)` shell with `busybox devmem`:
+
+- **Bit 0 of `CR_SD_ISR`/`CR_SD_ISREN` is a data bit, not a status bit.** A
+  write sets every other bit in the mask to bit 0's value: 0x07 enables END
+  and ERR, 0x16 clears END, ERR and DMA_DONE. The first version wrote 0x16 to
+  ISREN to "enable" and so disabled everything, and acknowledged interrupts
+  by writing back what it read, which re-asserts them.
+- **`SD_CONFIGURE2` bit 7 stops the core generating the command's CRC7.** The
+  first version used it to mean "don't check the response's CRC" (that is bit
+  2), so CMD0 and every R3 command went out with no valid CRC.
+- **R2 comes back by DMA with `DDR_WR` set** -- DMA *into* DDR -- and is
+  complete on DMA_DONE, not on END. Fifteen bytes land in the buffer after
+  the 0x3f header; the sixteenth is in `SD_CMD5`.
+- **The card-detect interrupt shares the line.** u-boot leaves
+  `CR_SD_INT_EN`/`CARD_INT_PEND` (0x120/0x121) at 0x04 with the card in, so
+  the line is asserted the moment the handler is installed and the kernel
+  gives up after 100000 unhandled interrupts. The driver polls for the card,
+  so it turns this off. The BSP never touches these registers; its handler
+  returns `IRQ_HANDLED` unconditionally, which hides a storm.
+- **`CARD_CLOCK_EN_CTL` must have bit 2 set.** The `SD_*` registers from
+  0x180 up are clocked by the SD module; with that clock off they read back
+  their last value and drop every write, while the `CARD_*` registers below
+  0x180 and the `CR_SD_*` ones below 0x100 keep working -- which looks like a
+  mapping problem until you try writing each block. The first version wrote
+  0x3b there, copied from the BSP's *card-removal* path, and so switched the
+  clock off itself. Init now follows the BSP's `rtk_sdmmc_hw_reset()`.
+
+`CONFIG_DYNAMIC_DEBUG` is now on in `bpiw2.config` for this.
 
 ### What M6 is worth
 
