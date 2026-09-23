@@ -154,7 +154,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
-| **M6** | mmc host driver | **stage 2 done** 2026-09-23: `mmcblk0` with its partitions, reads verified, 4-bit, ~5 MB/s -- see §8. Root on the card and speed next |
+| **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified, ~5 MB/s -- see §8. Speed later |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -900,6 +900,16 @@ Three things stood between stage 1 and this:
 - **The block layer wants at least a page per request.** With
   `max_req_size` at 512 `blk_validate_limits()` warns and `mmcblk` fails with
   -EINVAL, hence the multi-block modes and the larger buffer.
+
+### One card boots the whole system
+
+With `root=/dev/mmcblk0p2` in `bpiw2.config`, a single card in the slot
+(SW4=1, no USB storage) goes u-boot -> kernel -> vendor initramfs -> fsck ->
+systemd -> `bpi-w2-pikvm login:`, root mounted `rw` from the card. Logged in,
+256 MiB of `/dev/urandom` was written to the card, synced, caches dropped and
+read back with a matching md5; a second copy compared byte-identical with
+`cmp`. 512 MiB written in all, no MMC or ext4 errors. Writing ran at about
+5.1 MB/s and reading at 5.2 MB/s.
 
 Left for later: the clock ceiling (the "25 MHz" setting is the BSP's 0x2103,
 and the high-speed modes need the PLL and phase tuning), and scatter-gather
