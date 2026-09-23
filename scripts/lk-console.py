@@ -16,6 +16,8 @@ Environment:
     LOG        where to write the raw capture  (default /out/lk.log)
     BOOTARGS   written to /chosen/bootargs before booting
     CAPTURE    seconds to keep reading after `boot k`   (default 120)
+    SKIP_BOOT_A=1  do not run `boot a`
+    ACPU_RESET=1   hold the audio core in reset before `boot k`
     BASE       directory on the USB device holding the boot files
 """
 
@@ -136,6 +138,32 @@ if os.environ.get("SKIP_BOOT_A", "0") != "1":
     send("boot a", 30)
 else:
     print("  %-56s %s" % ("(boot a skipped)", "SKIP_BOOT_A=1"), flush=True)
+
+
+def read_word(addr):
+    mark = len(buf)
+    send("dw 0x%08x 1" % addr, 10)
+    m = re.search(rb"(?:0x)?0*%x:\s*(?:0x)?([0-9a-fA-F]{8})" % addr, bytes(buf[mark:]))
+    return int(m.group(1), 16) if m else None
+
+
+# ACPU_RESET=1 holds the audio core in reset before Linux starts. On the eMMC
+# path the boot firmware has already started it -- FSBL logs "md copy audio
+# bin" and LK "Set ACPU share memory" whether or not `boot a` runs -- and it
+# keeps running with a memory layout Linux knows nothing about. Soft reset 2
+# is CRT + 0x4; bit 0 is RSTN_ACPU, active low.
+if os.environ.get("ACPU_RESET", "0") == "1":
+    SOFT_RESET2 = 0x98000004
+    before = read_word(SOFT_RESET2)
+    if before is None:
+        print(">>> could not read SOFT_RESET2 -- not touching it", flush=True)
+    else:
+        send("mw 0x%08x 0x%08x" % (SOFT_RESET2, before & ~1), 10)
+        after = read_word(SOFT_RESET2)
+        print("  SOFT_RESET2 0x%08x -> 0x%08s (ACPU %s)" % (
+            before, "%08x" % after if after is not None else "????????",
+            "in reset" if after is not None and not (after & 1) else "NOT in reset"),
+            flush=True)
 
 print(">>> boot k", flush=True)
 os.write(fd, b"\r")

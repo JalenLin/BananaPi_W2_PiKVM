@@ -154,7 +154,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
-| **M6** | mmc host driver | **stage 1**, driver probes -- see §8. Blocked behind the corruption in §7 |
+| **M6** | mmc host driver | **stage 1**, driver probes; the card is not identified yet -- see §8 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -652,75 +652,80 @@ gadget.
 The login banner still advertises the BSP kernel and `hdmirx-*` helpers --
 it is baked into the rootfs and has not caught up with this branch.
 
-### Unfinished: something still writes over kernel memory
+### Resolved: the corruption belongs to the eMMC/LK boot path
 
-This is an open problem, not a solved one.
+For a while every boot died a few seconds into userspace -- in SLUB, in the
+page allocator, in `xas_find`, somewhere different each time. It is not the
+kernel. **The same kernel with the same DTB is clean when booted by the BSP
+u-boot from the SD slot, and fails every time when booted by LK from eMMC.**
 
-Through the middle of M3 the kernel would mount root, start systemd and then
-die within a few seconds, always in SLUB and always on a pointer from the
-`0x80000000` family -- the top of RAM -- but in a different function every
-boot:
+The decisive runs used a diagnostic kernel with a built-in initramfs
+(`kernel/mainline/diag/`; `scripts/build-diag-initramfs.sh`, then
+`EXTRA_CONFIG=kernel/mainline/diag/initramfs.config make kernel-mainline`), so userspace ran with no
+storage, USB, SD host or other DMA source at all. Its `/init` runs
+`aliastest`, which writes every 8-byte word of a growing buffer with its own
+physical address (from `/proc/self/pagemap`) and reads it all back -- unlike
+the kernel's `memtest=`, which writes one fixed pattern everywhere and so
+cannot see two addresses that are really the same DRAM.
 
-```
-put_cpu_partial+0x7c   <- __slab_free <- kfree <- bucket_table_free_rcu
-___slab_alloc+0x164    <- systemd
-xas_find+0xa8          <- next_uptodate_folio
-unmap_vmas+0xac
-```
+| Boot path | 256 MiB | 512 MiB | 1024 MiB |
+|---|---|---|---|
+| eMMC → FSBL → OP-TEE/BL31 → LK | clean | **kernel dies**, every time, within a millisecond of the same point | -- |
+| SD → BSP u-boot | clean | clean | clean |
 
-What has been ruled out:
+Then, on the u-boot path with the **normal** kernel and no `slub_debug`: two
+250 MiB random buffers each copied once (1 GiB resident in tmpfs), ten rounds
+of four parallel `urandom | gzip | gunzip` pipelines at 64 MiB each, then a
+byte-compare of every copy. All identical, no oops, 540 s uptime. On the LK
+path the same kind of load died inside 15 s.
 
-- **SMP.** `nr_cpus=1` crashes identically, with the same faulting
-  instruction. M1 is not implicated.
-- **The audio core alone.** Skipping LK's `boot a` (`SKIP_BOOT_A=1` in
-  `lk-console.py`) stops PID 1 from being killed and gets systemd much
-  further, but child processes still died. It is a contributor, not the whole
-  cause.
-
-What is *not* understood: the system became stable when `slub_debug=FZPU`
-was turned on -- **and slub_debug reported nothing**. No redzone violation,
-no poison mismatch. A buffer overrun into a neighbouring object would have
-been caught. That it is masked rather than reported fits a writer aiming at a
-fixed physical address: redzoning changes the layout, so the same write no
-longer lands on anything load-bearing.
-
-`slub_debug` is therefore doing duty as a workaround, which is not acceptable
-in a shipping image. It stays for now because it is what makes the board
-usable enough to continue; taking it out is part of finishing this.
-
-`CONFIG_PAGE_POISONING` and `CONFIG_DEBUG_VM` were tried alongside it and
-made things worse -- with `page_poison=1` the kernel died in
-`memblock_free_all` before reaching userspace, which is the poisoning
-touching pages it should not, not the bug being chased.
-
-Ruled out since, each with a boot:
+Ruled out on the LK path, each with a boot behind it:
 
 | Hypothesis | Test | Result |
 |---|---|---|
-| SMP / the M1 spin-table | `nr_cpus=1` | Crashes identically, same faulting instruction |
-| Something writes RAM early | `memtest=4` | Four patterns over 1.6 GiB, **no bad address reported** |
-| Firmware ION heaps unreserved | reserved all of them, moved the kernel to 0x1c000000 | Helped, did not fix |
-| The audio core | `SKIP_BOOT_A=1` | PID 1 survives and systemd gets much further; child processes still die |
-| Corruption near the top of RAM | `mem=1G` | Fewer crashes, but **the bad value is still exactly 0x80000000**, which is outside memory entirely at 1 GiB |
-| Wrong DMA coherency | compared with the BSP | The BSP has no `dma-coherent` anywhere either, so mainline's non-coherent default matches it |
+| SMP / the M1 spin-table | `nr_cpus=1` | Same crash |
+| RAM corrupted before Linux | `memtest=4` | Clean -- but a fixed pattern cannot see aliasing |
+| DMA of any kind | no USB core, no dwc3, no SD host (initcall blacklist) | Same crash |
+| The audio core | `SKIP_BOOT_A=1`, then held in reset via `SOFT_RESET2` bit 0 | Same crash, to the millisecond |
+| Unreserved firmware ION heaps | all reserved, kernel moved above them | Same crash |
+| ION secure heap (300 MiB) | reserved | Same crash |
+| What u-boot reserves and LK does not | mirrored both regions | Same crash |
+| DRAM smaller than declared | LK `bdinfo`: DDR4 2133, 16 Gb = 2 GiB | Size is right |
 
-The `mem=1G` result is the most informative: the corrupt pointer is the
-*constant* 0x80000000 whatever the memory size, so it is not a pointer that
-walked off the end of RAM. Something writes that value, or a cache line
-holding it, into live kernel structures.
+What differs between the two paths and was *not* isolated: the LK path runs
+FSBL, Android's OP-TEE ("TEE OS v2.1") and BL31 from the eMMC boot area, and
+its DRAM parameters come from the built-in hwsetting
+(`hwsetting size: 00000000`) instead of the SD card's. The failures are all
+reads of zero -- NULL dereferences at small offsets -- which fits either a
+region the secure world treats as read-as-zero, or DRAM misbehaving under
+load. Telling those apart means taking apart the Android firmware on the
+eMMC, which is not the product: the deliverable boots from SD.
 
-That, plus a clean early memtest, points away from "firmware scribbles on
-RAM" and towards stale DMA: a buffer freed and reused as slab memory, with
-cache maintenance going the wrong way, would produce exactly this -- plausible
-old data appearing inside allocator structures, crashes in a different place
-every boot, and sensitivity to anything that changes the layout.
+Consequences:
 
-**The next test should remove USB from the picture entirely.** It is
-currently the boot media, the root filesystem and the only DMA engine at
-once, so it cannot be isolated. A kernel with a built-in initramfs
-(`CONFIG_INITRAMFS_SOURCE`) would run userspace with no storage attached at
-all; if that is stable under memory pressure, DMA is implicated, and if it is
-not, the cause is in the kernel configuration for this platform.
+- **Development moves to the SD/u-boot path.** The LK route
+  (`scripts/lk-boot-usb.sh`) stays in the tree but is not a valid way to run
+  this kernel.
+- **Installing to eMMC later** would hit the same problem if the eMMC keeps
+  that Android boot chain; replacing it with the BSP u-boot is the thing to
+  verify first when that work starts.
+- `slub_debug` is gone from the command line. It never fixed anything: it
+  moved the slab layout so the damage landed somewhere less fatal, and
+  reported nothing.
+- The board DTS keeps the two regions u-boot reserves (`0x1f000..0xfffff`,
+  `0x1b00000..0x1fbdfff`) -- harmless, and correct whichever bootloader runs --
+  but not the secure heap, which only mattered as a hypothesis for the LK
+  path and cost 300 MiB.
+
+Two traps met on the way that are worth knowing about:
+
+- The BSP u-boot passes `0x31400000` as the ramdisk argument to `booti` even
+  when no initrd was loaded, and then refuses to boot. Renaming the initrd
+  away does not skip it; `booti 0x03000000 - 0x02100000` at the `BPI-W2>`
+  prompt does.
+- The vendor initramfs's busybox has no `md5sum`, `cksum` or `free`, and its
+  `dd` rejects `bs=1M`. Stress scripts that hide `dd`'s stderr will run happily
+  and test nothing.
 
 ### The SD slot boots after all
 
@@ -796,13 +801,22 @@ The driver probes and the register mapping is right. `MMC_CAP_NEEDS_POLL` is
 set because the card detect line is not wired to an interrupt, so a card
 inserted after boot is noticed.
 
-It has **not** been shown to talk to a card: every boot so far has died in
-the corruption described in §7 before the MMC core finished scanning. Stage 1
-cannot be called done until a `mmc0: new ... SD card` line appears.
+It has **not** been shown to talk to a card. Booted from the SD slot by
+u-boot, with the card itself sitting in the slot, `mmc0` registers but no card
+appears under `/sys/bus/mmc/devices/`, and the host's interrupt ran away:
 
-(The "card present" above was printed with the slot believed empty, so either
-the `CARD_EXIST` bit or its polarity is wrong. That is a stage 1 bug to chase
-once the board stays up long enough to test it.)
+```
+ 17:     100000          0          0          0    GICv2  76 Level     98010400.mmc
+```
+
+100000 is the kernel giving up on an interrupt line whose handler keeps
+returning `IRQ_NONE`: some status bit this driver neither recognises nor
+clears stays asserted. That is the next thing to fix. Stage 1 cannot be called
+done until a `mmc0: new ... SD card` line appears.
+
+The u-boot path also makes this the fast test loop for M6: the kernel boots in
+seconds, finds no `/dev/sda2`, and the vendor initramfs drops to an
+`(initramfs)` shell on the console, with `dmesg` and `/sys` to look at.
 
 ### What M6 is worth
 

@@ -33,7 +33,7 @@ docker run --rm --device "$DEV" \
     -v "$OUTDIR:/out" \
     python:3-slim sh -c "
 stty -F $DEV 115200 cs8 -cstopb -parenb -crtscts raw -echo min 1 time 0
-DEV=$DEV LOG=/out/$(basename "$OUT") CAPTURE=$CAPTURE SKIP_BOOT_A=${SKIP_BOOT_A:-0} \
+DEV=$DEV LOG=/out/$(basename "$OUT") CAPTURE=$CAPTURE SKIP_BOOT_A=${SKIP_BOOT_A:-0} ACPU_RESET=${ACPU_RESET:-0} \
 BOOTARGS='$BOOTARGS' \
 exec python3 -u /scripts/lk-console.py
 "

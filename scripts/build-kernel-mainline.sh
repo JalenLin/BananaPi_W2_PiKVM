@@ -11,6 +11,12 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 TARGETS="${TARGETS:-Image dtbs modules}"
 
+# EXTRA_CONFIG=kernel/mainline/<something>.config layers a second fragment on
+# top of bpiw2.config -- for diagnostic builds that must not leak into the
+# normal one. The combination last used is recorded in the tree, so going back
+# to a plain build regenerates .config instead of silently keeping the extras.
+EXTRA_CONFIG="${EXTRA_CONFIG:-}"
+
 # CHECK_DTBS=1 also runs the dtb through dt-validate against the bindings in
 # Documentation/devicetree/bindings. Off by default because it roughly doubles
 # the dtbs step; worth running whenever the board DTS changes.
@@ -48,11 +54,19 @@ cp "/work/kernel/mainline/realtek,rtd1295-irq-mux.yaml" \
 
 # arm64 defconfig is the baseline everyone else ports against, so start there
 # and layer only what this board needs on top.
-if [ ! -f .config ] || [ /work/kernel/mainline/bpiw2.config -nt .config ]; then
+FRAGMENTS="/work/kernel/mainline/bpiw2.config"
+EXTRA='"$EXTRA_CONFIG"'
+[ -n "$EXTRA" ] && FRAGMENTS="$FRAGMENTS /work/$EXTRA"
+STAMP=.bpiw2-fragments
+regen=0
+[ -f .config ] || regen=1
+[ "$(cat $STAMP 2>/dev/null)" = "$FRAGMENTS" ] || regen=1
+for f in $FRAGMENTS; do [ "$f" -nt .config ] && regen=1; done
+if [ "$regen" = 1 ]; then
     make defconfig
-    ./scripts/kconfig/merge_config.sh -m -O . .config \
-        /work/kernel/mainline/bpiw2.config
+    ./scripts/kconfig/merge_config.sh -m -O . .config $FRAGMENTS
     make olddefconfig
+    echo "$FRAGMENTS" > $STAMP
 fi
 
 make -j"$(nproc)" '"$MAKE_ARGS"' '"$TARGETS"'

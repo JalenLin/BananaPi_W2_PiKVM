@@ -1,0 +1,26 @@
+#!/bin/busybox sh
+# Diagnostic initramfs for the memory-corruption hunt (docs/09 §7).
+# Runs with no storage and no USB, and checks physical memory for aliasing:
+# aliastest writes every word with its own physical address, so a word that
+# reads back someone else's address names both ends of the alias. Sizes grow
+# step by step so that, if the kernel dies, the last line printed says how
+# far it got.
+/bin/busybox --install -s /bin
+mount -t devtmpfs dev /dev
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+exec >/dev/console 2>&1 </dev/console
+
+echo "=== DIAG: initramfs up ==="
+cat /proc/cmdline
+echo "cpus: $(grep -c ^processor /proc/cpuinfo)"
+free -m
+grep -E 'System RAM|reserved' /proc/iomem
+
+for mb in 64 128 256 512 768 1024 1200 1350; do
+    echo "=== DIAG: aliastest $mb MiB ==="
+    /bin/aliastest $mb
+    echo "=== DIAG: exit $? after $mb MiB, up=$(cut -d' ' -f1 /proc/uptime) ==="
+done
+echo "=== DIAG: all sizes done ==="
+exec sh

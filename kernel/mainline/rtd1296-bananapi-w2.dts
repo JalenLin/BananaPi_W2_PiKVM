@@ -93,12 +93,26 @@
 		};
 
 		/*
-		 * The tail of SYS_BOOTCODE. rtd129x.dtsi already reserves
-		 * 0x1f000..0x1ffff as rpc@1f000; this is the rest of what LK
-		 * loaded there ("FW Image to 0x00020000").
+		 * The two regions the BSP u-boot hands the OS as /memreserve/
+		 * entries before it jumps -- seen on the serial console as
+		 *
+		 *   reserving fdt memory region: addr=1f000 size=e1000
+		 *   reserving fdt memory region: addr=1b00000 size=4be000
+		 *
+		 * LK adds neither. On the eMMC path FSBL puts the bootcode at
+		 * 0x20000..0xb37e0 and starts BL31 and OP-TEE, and with only
+		 * 0x20000..0x2ffff reserved here Linux handed the rest out;
+		 * the page allocator then died a few seconds into userspace.
+		 * rtd129x.dtsi already has 0x1f000..0x1ffff as rpc@1f000, so
+		 * the first region starts after it.
 		 */
 		bootcode: bootcode@20000 {
-			reg = <0x00020000 0x00010000>;
+			reg = <0x00020000 0x000e0000>;
+			no-map;
+		};
+
+		fw_reserved: firmware@1b00000 {
+			reg = <0x01b00000 0x004be000>;
 			no-map;
 		};
 
