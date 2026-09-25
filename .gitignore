@@ -21,3 +21,4 @@ authorized_keys
 
 # Vendor reference images (Android / OpenWrt) downloaded for driver archaeology
 /refer_images/
+__pycache__/
