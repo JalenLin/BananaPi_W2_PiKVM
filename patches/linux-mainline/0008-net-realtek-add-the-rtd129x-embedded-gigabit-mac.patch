@@ -1,0 +1,55 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] net: realtek: add the RTD129x embedded gigabit MAC
+
+The driver itself is kept outside the kernel tree, in
+kernel/mainline/r8169soc.c, and copied in by
+scripts/build-kernel-mainline.sh -- same reasoning as the SD host.
+
+NET_VENDOR_REALTEK depends on PCI, and this SoC has none, so without the
+ARCH_REALTEK alternative the whole Realtek submenu is unreachable and
+R8169SOC can never be selected.
+
+diff --git a/drivers/net/ethernet/realtek/Kconfig b/drivers/net/ethernet/realtek/Kconfig
+index 272c83bfd..9b94393b0 100644
+--- a/drivers/net/ethernet/realtek/Kconfig
++++ b/drivers/net/ethernet/realtek/Kconfig
+@@ -6,7 +6,7 @@
+ config NET_VENDOR_REALTEK
+ 	bool "Realtek devices"
+ 	default y
+-	depends on PCI || (PARPORT && X86)
++	depends on PCI || (PARPORT && X86) || ARCH_REALTEK
+ 	help
+ 	  If you have a network (Ethernet) card belonging to this class, say Y.
+ 
+@@ -121,6 +121,20 @@ config R8169_LEDS
+ 	  Optional support for controlling the NIC LED's with the netdev
+ 	  LED trigger.
+ 
++config R8169SOC
++	tristate "Realtek RTD129x embedded gigabit MAC"
++	depends on ARCH_REALTEK
++	depends on OF && HAS_IOMEM
++	select CRC32
++	select MII
++	help
++	  The gigabit MAC and PHY built into the Realtek RTD1295/RTD1296.
++	  It is an RTL8168-family MAC on the SoC's internal bus instead of
++	  PCIe, so the PCI r8169 driver cannot bind to it.
++
++	  This is Realtek's own platform driver, carried over from their
++	  4.9 BSP.
++
+ config RTASE
+ 	tristate "Realtek Automotive Switch 9054/9068/9072/9075/9068/9071 PCIe Interface support"
+ 	depends on PCI
+diff --git a/drivers/net/ethernet/realtek/Makefile b/drivers/net/ethernet/realtek/Makefile
+index 046adf503..e91fabe11 100644
+--- a/drivers/net/ethernet/realtek/Makefile
++++ b/drivers/net/ethernet/realtek/Makefile
+@@ -9,4 +9,5 @@ obj-$(CONFIG_ATP) += atp.o
+ r8169-y += r8169_main.o r8169_firmware.o r8169_phy_config.o
+ r8169-$(CONFIG_R8169_LEDS) += r8169_leds.o
+ obj-$(CONFIG_R8169) += r8169.o
++obj-$(CONFIG_R8169SOC) += r8169soc.o
+ obj-$(CONFIG_RTASE) += rtase/

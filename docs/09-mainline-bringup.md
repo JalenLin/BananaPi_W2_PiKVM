@@ -24,6 +24,8 @@ sit side by side and the build picks one.
 | `patches/linux-mainline/` | Changes to files that already exist upstream: the dts Makefile line, and the board compatible in the bindings |
 | `kernel/mainline/rtd1296-bananapi-w2.dts` | Our board DTS |
 | `kernel/mainline/bpiw2.config` | Kconfig fragment merged onto `arm64 defconfig` |
+| `kernel/mainline/r8169soc.c` | The gigabit MAC driver (M2), copied in at build time |
+| `scripts/push-kernel-mainline.sh` | Installs a new kernel on a running board over ssh |
 | `docker/builder-mainline.Dockerfile` | Trixie + `gcc-aarch64-linux-gnu` 14.2 |
 | `scripts/build-kernel-mainline.sh` | Copies the DTS in, configures, builds |
 
@@ -150,7 +152,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 |-------|---------------|--------|
 | **M0** | BSP u-boot + clean 6.18.x + board DTS; serial console, single core | **done**, booted 2026-09-21 -- see §5 |
 | **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
-| **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | not started |
+| **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | **built** 2026-09-25, not yet run on hardware -- see §9 |
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
@@ -925,7 +927,98 @@ only thing between here and `CLAUDE.md`'s "flash a card and go".
 
 ---
 
-## 9. Sources
+## 9. M2, the gigabit port
+
+**Built, not yet run on hardware** (2026-09-25; the board was not at hand).
+The point of doing it next is the test loop: with the network up, a new
+kernel goes onto the running board over ssh (`scripts/push-kernel-mainline.sh`)
+and the card stays in the slot.
+
+### The driver: Realtek's, by way of a working 6.18 port
+
+Mainline has no driver for the RTD129x's embedded MAC. It is an RTL8168-family
+MAC and PHY, but on the SoC's internal bus rather than PCIe, so `r8169` cannot
+bind. The BSP's `r8169soc.c` is Realtek's platform variant of it.
+
+`Fireblossom/wd-mch-kernel` already carried that file to 6.18.40 and runs it
+on an RTD1295 (the WD My Cloud Home) at gigabit. Their copy is the starting
+point -- `kernel/mainline/r8169soc.c`, copied into the tree by
+`build-kernel-mainline.sh` like the SD host -- with three changes for this
+board:
+
+- **The ETN clocks are gated by hand.** There is no RTD129x clock driver, so
+  every `clk_get()` fails. Their copy turns those into NULL clocks, which
+  makes `clk_prepare_enable()` a no-op; that only works because the WD's
+  bootloader leaves the clocks on. Here, when the clocks are NULL, the
+  driver sets `ISO_CLK_EN` (0x9800708c) bits 12:11 itself at the same three
+  points in Realtek's power-up sequence. Probe prints both registers, so the
+  first boot shows what u-boot left:
+
+  ```
+  r8169 98016000.ethernet: chip revision ..., ETN clocks ..., resets ...
+  ```
+
+- **The chip revision is read, not assumed.** It selects PHY calibration
+  values, and their `rtk_chip.h` stub always said A00, which would apply
+  the A00-only AFE fix to every chip. It now comes from SB2 0x9801a204 bits
+  17:16, where the BSP's `rtk_chip.c` gets it.
+
+- **No shared MAC address.** The driver takes the address u-boot left in the
+  MAC registers, and the BSP u-boot's is `CONFIG_ETHADDR`,
+  `00:10:20:30:40:50`, on every board. That value (or an invalid one) is
+  replaced with a random address, which marks it `NET_ADDR_RANDOM`; udev's
+  default `MACAddressPolicy=persistent` then derives one from `machine-id`.
+  It is stable across boots, so DHCP keeps handing out the same lease.
+
+`NET_VENDOR_REALTEK` depends on PCI, which this SoC does not have, so the
+whole Realtek menu was unreachable. Patch 0008 adds `ARCH_REALTEK` to that
+line and adds the `R8169SOC` symbol. It is built in, not a module, so ssh
+still works when `/lib/modules` does not match a freshly pushed kernel.
+
+The DT node is the BSP's, minus its clocks. The second `reg` is the ISO
+block, which `rtd129x.dtsi` already has as `iso: syscon@7000`. That does not
+collide the way the SD host's CRT window did, because this driver maps it with
+`of_iomap()`, which does not request the region.
+
+The board DTS also gains `ethernet0 = &gmac`. With that alias, systemd names
+the interface `end0` (an onboard device found through the devicetree) rather
+than `eth0`. `10-wired.network` matches on `Type=ether`, so DHCP does not care.
+
+### The image side
+
+- `make image-mainline` now installs the mainline kernel's modules
+  (stripped) in place of the BSP's 4.9 set.
+- Its boot partition is at least 256 MiB. A mainline Image is ~42 MiB, and a
+  push over the network briefly holds three (`uImage`, `uImage.prev`,
+  `uImage.new`); at the old size, 36 MiB was free.
+- The rootfs answers mDNS (systemd-resolved, `MulticastDNS=yes`), so a newly
+  flashed board is `bpi-w2-pikvm.local`. `scripts/board-ssh.sh` defaults to
+  that name. It resolves it on the host, falling back to
+  `scripts/mdns-resolve.py` when the host has no nss-mdns.
+- ssh was already there: `openssh-server`, root/pikvm (a test image only),
+  and host keys generated on first boot by `bpikvm-firstboot`. The image still
+  ships no keys; `build-rootfs.sh` fails the build if one appears.
+
+### How to test it
+
+```sh
+make kernel-mainline && make image-mainline
+# flash build/bpiw2-pikvm-mainline.img, boot with SW4=1, cable in the RJ45
+# next to the USB ports
+
+scripts/board-ssh.sh 'ip -br addr; grep . /sys/class/net/end0/speed; dmesg | grep 98016000'
+
+# from then on, kernels go over the network:
+make kernel-mainline && scripts/push-kernel-mainline.sh --modules --reboot
+```
+
+If probe misbehaves, the serial console has the `chip revision ... ETN
+clocks ... resets ...` line. The vendor's `/proc` register dumps are compiled
+out (`RTL_PROC`; their `proc_ops` conversion was never done).
+
+---
+
+## 10. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -935,3 +1028,6 @@ only thing between here and `CLAUDE.md`'s "flash a card and go".
 | `08-kernel-uplift.md` | The milestone definitions and the list of things to copy |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/irqchip/irq-rtd129x.[ch]` | The interrupt mux register layout and the status-bit -> enable-bit tables |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtd129x_spin_table.c` | How the secondary CPUs are released |
+| `Fireblossom/wd-mch-kernel` @ `947374d` (`linux-6.18.40/drivers/net/ethernet/realtek/r8169soc.c`) | The 6.18 port of Realtek's `r8169soc.c` that M2 starts from |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_chip.c` | Where the chip revision lives |
+| `vendor/bpi-w2-bsp/u-boot-rtk/include/configs/rtd1295_common.h` | `CONFIG_ETHADDR`, the MAC every board shares |

@@ -23,6 +23,7 @@
 	model = "Banana Pi BPI-W2";
 
 	aliases {
+		ethernet0 = &gmac;
 		serial0 = &uart0;
 	};
 
@@ -183,6 +184,35 @@
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
 		bus-width = <4>;
 		cap-sd-highspeed;
+	};
+
+	/*
+	 * The RJ45 next to the USB ports: the SoC's own gigabit MAC and PHY.
+	 * (The second RJ45 is the hwnat switch, which has no usable driver --
+	 * see docs/06-changes.md.)
+	 *
+	 * Realtek's binding, from the BSP's rtd-1296.dtsi, with the clocks
+	 * dropped: there is no clock driver for this SoC in mainline and
+	 * r8169soc gates the ETN clocks through the ISO block itself. The
+	 * second reg is that ISO block. rtd129x.dtsi already has it as
+	 * `iso: syscon@7000`, but the driver maps it with of_iomap(), which
+	 * does not request the region, so the overlap does not collide the
+	 * way the SD host's CRT window did.
+	 */
+	gmac: ethernet@16000 {
+		compatible = "Realtek,r8168";
+		reg = <0x16000 0x1000>, <0x7000 0x1000>;
+		interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_HIGH>;
+		resets = <&iso_reset RTD1295_ISO_RSTN_GMAC>,
+			 <&iso_reset RTD1295_ISO_RSTN_GPHY>;
+		reset-names = "gmac", "gphy";
+		rtl-config = <1>;
+		mac-version = <42>;	/* RTL_GIGA_MAC_VER_42 */
+		output-mode = <0>;	/* embedded PHY */
+		rgmii-voltage = <1>;
+		rgmii-tx-delay = <0>;
+		rgmii-rx-delay = <0>;
+		ext-phy-id = <1>;
 	};
 
 	/* Port 1: USB 2.0 host */

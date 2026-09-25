@@ -89,6 +89,20 @@ if [ "$FLAVOUR" = "mainline" ]; then
     printf "$esc" | dd of="$L/uImage" bs=1 seek=8 conv=notrunc status=none
     echo ">>> patched arm64 text_offset to $TEXT_OFFSET (old bootloaders ignore the relocatable flag)"
 fi
+if [ "$FLAVOUR" = "mainline" ]; then
+    # rootfs.tar carries the BSP kernel's modules. Stage the mainline ones
+    # next to it; the assembly step below swaps them in. Stripped, because
+    # arm64 defconfig builds several hundred modules with full debug info.
+    echo ">>> installing the mainline modules"
+    rm -rf "$BUILD/modules-mainline"
+    BUILDER_IMAGE=bpiw2-pikvm/builder-mainline:trixie \
+    "$PROJECT_ROOT/scripts/in-docker.sh" bash -c '
+        cd /work/vendor/linux-mainline &&
+        make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="" \
+             INSTALL_MOD_PATH=/work/build/modules-mainline INSTALL_MOD_STRIP=1 \
+             modules_install'
+    ls "$BUILD/modules-mainline/lib/modules"
+fi
 cp "$KDTB" "$L/bpi-w2.dtb"
 cp "$L/bpi-w2.dtb" "$L/rtd-1296-bananapi-w2-2GB.dtb"
 cp "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/bluecore.audio" "$L/"
@@ -106,7 +120,13 @@ du -sh "$BUILD/bootfs"
 # size of the BSP one, so size p1 from what was actually staged and round up
 # to a multiple of 32 MiB. 60 MiB is the floor so the BSP image keeps exactly
 # the layout that was verified on hardware.
+#
+# The mainline image also has to take new kernels over the network
+# (scripts/push-kernel-mainline.sh), which briefly holds three of them --
+# uImage, uImage.prev and the incoming uImage.new, ~42 MiB each -- so its
+# floor is 256 MiB.
 P1_MB=60
+[ "$FLAVOUR" = "mainline" ] && P1_MB=256
 staged_mb="$(du -sm "$BUILD/bootfs" | cut -f1)"
 if [ "$((staged_mb + 12))" -gt "$P1_MB" ]; then
     P1_MB=$(( ((staged_mb + 12 + 31) / 32) * 32 ))
@@ -141,6 +161,13 @@ mcopy -i /b/p1.img -s /b/bootfs/* ::/
 # p2: ext4 + rootfs
 rm -rf /b/rootfs && mkdir -p /b/rootfs
 tar xf /b/rootfs.tar -C /b/rootfs
+if [ -d /b/modules-mainline/lib/modules ] && [ $FLAVOUR = mainline ]; then
+    # The BSP modules cannot load into this kernel; replace them. Plain cp,
+    # not cp -a: the staged tree belongs to the build uid, and the rootfs
+    # must stay root-owned (see the uid check in build-rootfs.sh).
+    rm -rf /b/rootfs/usr/lib/modules/*
+    cp -r /b/modules-mainline/lib/modules/. /b/rootfs/usr/lib/modules/
+fi
 P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))
 truncate -s \$(( P2_SECTORS * 512 )) /b/p2.img
 mkfs.ext4 -q -F -L BPI-ROOT -d /b/rootfs /b/p2.img

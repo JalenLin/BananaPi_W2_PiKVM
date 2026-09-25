@@ -7,7 +7,18 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST="${BOARD_HOST:-192.168.99.93}"
+HOST="${BOARD_HOST:-bpi-w2-pikvm.local}"
+# The image answers mDNS for its hostname. The ssh container has no mDNS
+# resolver, so resolve it here: through nss-mdns if the host has it, else by
+# asking on the wire.
+case "$HOST" in
+  *.local)
+    addr="$(getent ahostsv4 "$HOST" | awk 'NR == 1 { print $1 }')" || true
+    [ -n "$addr" ] || addr="$(python3 "$PROJECT_ROOT/scripts/mdns-resolve.py" "$HOST")" || true
+    [ -n "$addr" ] || { echo "cannot resolve $HOST -- set BOARD_HOST to its IP" >&2; exit 1; }
+    HOST="$addr"
+    ;;
+esac
 PASS="${BOARD_PASS:-pikvm}"
 IMG="bpiw2-pikvm/ssh:latest"
 OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"

@@ -151,6 +151,15 @@ Type=ether
 
 [Network]
 DHCP=yes
+MulticastDNS=yes
+EOF
+# mDNS, so a freshly flashed board is reachable as bpi-w2-pikvm.local without
+# first finding out which address DHCP gave it. resolved does the responding;
+# it has to be on both here and per link above.
+mkdir -p /etc/systemd/resolved.conf.d
+cat > /etc/systemd/resolved.conf.d/10-mdns.conf <<EOF
+[Resolve]
+MulticastDNS=yes
 EOF
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh
 
