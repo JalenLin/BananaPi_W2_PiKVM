@@ -179,9 +179,9 @@
  * <PHY data (wrapper)>, <PHY control (dwc3 core)>, and phy-rtk-usb2.c maps
  * index 0 to reg_wrap_vstatus and index 1 to reg_gusb2phyacc0.
  *
- * Port 0 is the Type-C/DRD port and port 2 is the EHCI/OHCI pair; neither is
- * here yet. Port 0 needs the extcon type-c driver to settle orientation, and
- * mainline has no driver for the BSP's "Realtek,rtd129x-ehci".
+ * Port 0 is the Type-C port, as a device (below). Port 2, the EHCI/OHCI
+ * pair, is not here: mainline has no driver for the BSP's
+ * "Realtek,rtd129x-ehci".
  *
  * The USB clock gate and resets used to be left to the bootloader. LK runs
  * `usb start` and leaves them open, but the BSP u-boot on an SD boot does
@@ -248,6 +248,53 @@
 		rgmii-tx-delay = <0>;
 		rgmii-rx-delay = <0>;
 		ext-phy-id = <1>;
+	};
+
+	/*
+	 * Port 0: the Type-C connector, as a USB device. It is how PiKVM
+	 * presents its keyboard, mouse and mass storage to the target (kvmd-otg
+	 * builds the gadget through configfs), so it is pinned to peripheral.
+	 * No role switching and no CC handling: the port is meant to be cabled
+	 * to the target, which supplies VBUS, and the board is powered from the
+	 * DC jack. The BSP ended up in the same place on the main branch
+	 * (docs/06-changes.md, patch 0006) after its Type-C driver kept flipping
+	 * the port to host.
+	 *
+	 * Addresses from the BSP's rtd-129x-usb.dtsi, arranged like the host
+	 * ports below (wrapper length 0x140; usb2phy reg order is <wrapper>,
+	 * <dwc3 core>).
+	 */
+	usb_drd_usb2phy: usb-phy@13214 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13214 0x4>, <0x28280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb_drd_usb3phy: usb-phy@13210 {
+		compatible = "realtek,rtd1295-usb3phy";
+		reg = <0x13210 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb@13200 {
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13200 0x140>, <0x13360 0x4>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb@20000 {
+			compatible = "snps,dwc3";
+			clocks = <&crt_clk RTD129X_CLK_EN_USB>;
+			clock-names = "bus_early";
+			resets = RTD129X_USB_RESETS;
+			reg = <0x20000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb_drd_usb2phy>, <&usb_drd_usb3phy>;
+			phy-names = "usb2-phy", "usb3-phy";
+			dr_mode = "peripheral";
+			snps,dis_u2_susphy_quirk;
+		};
 	};
 
 	/* Port 1: USB 2.0 host */

@@ -153,7 +153,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M0** | BSP u-boot + clean 6.18.x + board DTS; serial console, single core | **done**, booted 2026-09-21 -- see §5 |
 | **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
 | **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | **done** 2026-10-01: gigabit, DHCP, ssh, kernels installed over the network, reboot via the watchdog -- see §9 |
-| **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
+| **M3** | USB DT + the two probe quirks, Type-C as peripheral | **done**: host ports 2026-09-22 (and on an SD boot 2026-10-01); Type-C gadget enumerated by the target and kvmd-otg up 2026-10-01 -- see §7 |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified, ~5 MB/s -- see §8. Speed later |
@@ -789,6 +789,49 @@ Result on an SD boot: both xHCIs, `hub 1-1` (the onboard Terminus hub), and
 `crt_clk_en1_4` held by the controllers. The SD host and the network were
 unaffected. `CLK_EN2` is covered too because the HDMI receiver's gate
 (`CLK_EN_HDMIRX`) lives there.
+
+### The other half of M3: Type-C as a USB device (2026-10-01)
+
+PiKVM reaches the target through a USB gadget on the Type-C port: a HID
+keyboard and mouse that `kvmd-otg` builds in configfs. On this bench the
+port is cabled to the HDMI source's USB-A port (a Raspberry Pi running
+Kodi), which is the host.
+
+- **DTS:** port 0 as a third `realtek,rtd1295-dwc3` wrapper (`0x13200`), its
+  core at `0x20000`, both PHYs, `dr_mode = "peripheral"`, and the same USB
+  clock and reset lines as the host ports. There is no role switching and no
+  CC handling. The port is meant to face the target, which supplies VBUS,
+  and the board is powered from the DC jack. The main branch reached the
+  same arrangement on the BSP kernel, after that kernel's Type-C driver
+  kept flipping the port to host (docs/06-changes.md, patch 0006).
+  `dwc3-rtk` switches the USB2 PHY to device itself when `dr_mode` says so.
+- **Kconfig:** arm64 defconfig builds the configfs gadget as modules and
+  leaves out the HID function. `kvmd-otg` does not load `libcomposite`, so
+  `/sys/kernel/config/usb_gadget` never appeared, and it died with ENOENT
+  on `mkdir .../usb_gadget/kvmd`. `USB_LIBCOMPOSITE`, `USB_CONFIGFS` and
+  `USB_CONFIGFS_F_HID` are now built in, as on the BSP kernel.
+
+Result, with no manual step after boot:
+
+```
+# ls /sys/class/udc
+98020000.usb
+# cat /sys/class/udc/*/state /sys/class/udc/*/current_speed
+configured
+high-speed
+# ls /sys/kernel/config/usb_gadget/kvmd/functions/ ; ls /dev/hidg*
+hid.usb0  hid.usb1
+/dev/hidg0  /dev/hidg1
+# systemctl is-active kvmd-otg kvmd kvmd-nginx
+active
+active
+active
+```
+
+`configured` means the Pi enumerated the gadget and selected its
+configuration. `systemctl --failed` is empty for the first time on this
+branch. Whether keystrokes arrive at the target is the next thing to check,
+and it can be seen on the target's screen once HDMI capture (M5) works.
 
 ## 8. M6, the SD slot
 
