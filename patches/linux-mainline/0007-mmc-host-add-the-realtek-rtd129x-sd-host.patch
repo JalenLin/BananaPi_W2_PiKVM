@@ -7,16 +7,17 @@ scripts/build-kernel-mainline.sh -- same reasoning as the board .dts and the
 irq mux. These two build-system lines do not change, so they are a patch.
 
 diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
-index c94ae4794..deaf12fee 100644
+index c94ae4794..cd8d053ad 100644
 --- a/drivers/mmc/host/Kconfig
 +++ b/drivers/mmc/host/Kconfig
-@@ -64,6 +64,18 @@ config MMC_PXA
+@@ -64,6 +64,19 @@ config MMC_PXA
  
  	  If unsure, say N.
  
 +config MMC_SDMMC_RTD129X
 +	tristate "Realtek RTD129x SD/MMC host"
 +	depends on ARCH_REALTEK || COMPILE_TEST
++	select MFD_SYSCON
 +	help
 +	  Support for the SD card host on the Realtek RTD1295/RTD1296. The
 +	  controller is the Realtek card reader core the rtsx drivers already

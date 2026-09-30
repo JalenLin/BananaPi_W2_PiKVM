@@ -213,10 +213,9 @@
 	 *   rtd129x-sdmmc 98000000.mmc: error -EBUSY: can't request region for
 	 *   resource [mem 0x98000000-0x980003ff]
 	 *
-	 * Nothing needs them yet: the clock generator this driver uses,
-	 * CR_SD_CKGEN_CTL, is inside the core at offset 0x78. When a later
-	 * stage needs the PLL it should reach it through a syscon phandle
-	 * rather than a second mapping.
+	 * The clock generator, CR_SD_CKGEN_CTL, is inside the core at offset
+	 * 0x78. The SD PLL in CRT is reached through the crt syscon
+	 * (realtek,crt) rather than a second mapping.
 	 *
 	 * No clocks or resets either: there is no clk or reset driver for this
 	 * SoC in mainline and the driver treats both as optional, because the
@@ -225,6 +224,12 @@
 	sdmmc: mmc@10400 {
 		compatible = "realtek,rtd1295-sdmmc";
 		reg = <0x10400 0x200>;
+		/*
+		 * The SD PLL (PLL_SD3/4) is in CRT. The driver sets it to a
+		 * known 100 MHz, which is what makes high speed (50 MHz)
+		 * possible; without this it stays at its slow settings.
+		 */
+		realtek,crt = <&crt>;
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
 		bus-width = <4>;
 		cap-sd-highspeed;

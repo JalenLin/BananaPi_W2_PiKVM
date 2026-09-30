@@ -156,7 +156,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **done**: host ports 2026-09-22 (and on an SD boot 2026-10-01); Type-C gadget enumerated by the target and kvmd-otg up 2026-10-01 -- see §7 |
 | **M4** | kvmd + ustreamer on 6.18 | **done** 2026-10-01: kvmd starts ustreamer on demand, keyboard input reaches the target and shows up in the capture -- see §10 |
 | **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
-| **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified, ~5 MB/s -- see §8. Speed later |
+| **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -991,9 +991,45 @@ read back with a matching md5; a second copy compared byte-identical with
 `cmp`. 512 MiB written in all, no MMC or ext4 errors. Writing ran at about
 5.1 MB/s and reading at 5.2 MB/s.
 
-Left for later: the clock ceiling (the "25 MHz" setting is the BSP's 0x2103,
-and the high-speed modes need the PLL and phase tuning), and scatter-gather
-DMA instead of the bounce copy.
+### High speed, 2026-10-01
+
+Left for later at the time: the clock ceiling, and scatter-gather DMA instead
+of the bounce copy. The clock is now done.
+
+What the clock really was. The card clock is the SD PLL / 2 / 2^n in SD 2.0
+mode, with n from `CR_SD_CKGEN_CTL` bits 1:0 and a further /256 from the
+`SD_CONFIGURE1` divider. The PLL is `(ssc_div_n + 3) * 4.5 / 4` MHz, with
+`ssc_div_n` in CRT `PLL_SD3` bits 23:16 (the BSP's own comment). u-boot
+leaves the PLL wherever the card it booted from needed it. After this SDR104
+card that was `0x00b64388`, i.e. 208 MHz, so "0x2103" had been running the
+bus at about 13 MHz -- not the 6.2 MHz its BSP name suggests, and not a rate
+anybody chose. Confirmed before changing anything: switching to 0x2102 by
+devmem read the boot partition 1.76x faster, with the same md5.
+
+The driver now:
+
+- sets the PLL to 100 MHz (`0x00564388`, the BSP u-boot's default) at
+  probe, with the BSP's sequence: the core on its 4 MHz source and the PLL
+  held in reset around the write. CRT is reached through the `crt` syscon
+  (`realtek,crt = <&crt>`), not a second mapping.
+- derives n from the requested rate: 50 MHz is 0x2100, 25 MHz 0x2101, and
+  identification uses 0x2100 plus /256 = 195 kHz. It also reports
+  `actual_clock`.
+- advertises `MMC_CAP_SD_HIGHSPEED` with `f_max` = 50 MHz. The BSP sets no
+  sample or push point for high speed, only the clock. The UHS modes need
+  1.8 V signalling and tuning, and are not done.
+
+Without `realtek,crt` it keeps the old conservative settings.
+
+| | before (~13 MHz) | high speed (50 MHz) |
+|---|---|---|
+| read | 5.1 MB/s | **24.7-25.5 MB/s** |
+| write | ~5 MB/s | **14.4 MB/s** |
+
+The card comes up as `new high speed SDHC card`, and `ios` shows
+`timing spec: 2 (sd high-speed)`, `actual clock: 50000000 Hz`. 256 MiB of
+random data written and read back matched by md5 and by `cmp`. The kernel
+pushed onto `/boot` matched the build byte for byte. No mmc or I/O errors.
 
 ### What M6 is worth
 

@@ -29,6 +29,8 @@
 #include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -164,6 +166,7 @@ struct rtd129x_sdmmc {
 	struct mmc_host		*mmc;
 
 	void __iomem		*sd;	/* the card reader core */
+	struct regmap		*crt;	/* CRT syscon, for the SD PLL; may be NULL */
 
 	int			irq;
 	struct completion	done;
@@ -194,31 +197,73 @@ static int rtd129x_get_cd(struct mmc_host *mmc)
 	return !!(readb(host->sd + CARD_EXIST) & SD_EXISTENCE);
 }
 
+/*
+ * The SD PLL, in CRT. u-boot leaves it wherever the card it booted from
+ * wanted -- 208 MHz after an SDR104 card -- so it is set to a known rate
+ * here, 100 MHz, the BSP u-boot's own default. The BSP's formula:
+ * rate = (ssc_div_n + 3) * 4.5 / 4 MHz, ssc_div_n in PLL_SD3 bits 23:16;
+ * 0x56 gives 100.1 MHz. The sequence (PLL held in reset around the change,
+ * the core switched to its 4 MHz source meanwhile) is rtk_sdmmc_speed()'s.
+ */
+#define CR_PLL_SD3		0x1e8
+#define CR_PLL_SD4		0x1ec
+#define PLL_SD3_100MHZ		0x00564388
+#define SD_PLL_HZ		100000000
+#define CKGEN_SRC_4MHZ		(0x7 << 16)
+
+static void rtd129x_set_pll(struct rtd129x_sdmmc *host)
+{
+	u32 ckgen = readl(host->sd + CR_SD_CKGEN_CTL);
+
+	writel(ckgen | CKGEN_SRC_4MHZ, host->sd + CR_SD_CKGEN_CTL);
+	regmap_write(host->crt, CR_PLL_SD4, 0x6);
+	regmap_write(host->crt, CR_PLL_SD3, PLL_SD3_100MHZ);
+	mdelay(2);
+	regmap_write(host->crt, CR_PLL_SD4, 0x7);
+	writel(ckgen & ~CKGEN_SRC_4MHZ, host->sd + CR_SD_CKGEN_CTL);
+	rtd129x_sync(host);
+}
+
+/*
+ * Card clock = PLL / 2 / 2^n in SD 2.0 mode, n from CR_SD_CKGEN_CTL bits 1:0,
+ * and a further /256 when the SD_CONFIGURE1 divider is on. With the PLL at
+ * 100 MHz: 0x2100 = 50 MHz (high speed), 0x2101 = 25 MHz (default speed),
+ * 0x2103 = 6.25 MHz, and the divider on top of 0x2100 = 195 kHz for
+ * identification. Measured: with u-boot's 208 MHz PLL, 0x2102 read 1.76x as
+ * fast as 0x2103, the same data.
+ *
+ * Without the CRT syscon the PLL rate is unknown and the clock stays at the
+ * conservative settings this driver started with.
+ */
 static void rtd129x_set_clock(struct rtd129x_sdmmc *host, unsigned int hz)
 {
 	u8 cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_CLOCK_DIV_MASK;
+	unsigned int n, actual;
 	u32 ckgen;
 
-	/*
-	 * Two controls in series: a divider in SD_CONFIGURE1 and the clock
-	 * generator in CR_SD_CKGEN_CTL. The BSP only ever uses the handful of
-	 * combinations below, so this does the same rather than computing one.
-	 */
 	if (hz <= 400000) {
 		writeb(cfg1 | SD_CLOCK_DIV_256 | SD_CLOCK_DIV_EN,
 		       host->sd + SD_CONFIGURE1);
 		ckgen = 0x00002100;
-	} else if (hz <= 25000000) {
+		actual = SD_PLL_HZ / 2 / 256;
+	} else if (!host->crt) {
 		writeb(cfg1, host->sd + SD_CONFIGURE1);
-		ckgen = 0x00002103;
+		ckgen = (hz <= 25000000) ? 0x00002103 : 0x00002101;
+		actual = 0;
 	} else {
+		/* the fastest rate not above what was asked for */
+		for (n = 0; n < 3; n++)
+			if ((SD_PLL_HZ / 2 >> n) <= hz)
+				break;
 		writeb(cfg1, host->sd + SD_CONFIGURE1);
-		ckgen = 0x00002101;
+		ckgen = 0x00002100 | n;
+		actual = SD_PLL_HZ / 2 >> n;
 	}
 
 	rtd129x_sync(host);
 	writel(ckgen, host->sd + CR_SD_CKGEN_CTL);
 	rtd129x_sync(host);
+	host->mmc->actual_clock = actual;
 }
 
 static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -700,6 +745,14 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	/* Optional: the CRT syscon, for the SD PLL. */
+	host->crt = syscon_regmap_lookup_by_phandle_optional(dev->of_node,
+							     "realtek,crt");
+	if (IS_ERR(host->crt)) {
+		ret = PTR_ERR(host->crt);
+		goto err_free;
+	}
+
 	/*
 	 * Optional on purpose. There is no clock or reset driver for this SoC
 	 * in mainline, and the bootloader has just used this controller to
@@ -740,6 +793,8 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 	}
 
 	rtd129x_hw_init(host);
+	if (host->crt)
+		rtd129x_set_pll(host);
 
 	ret = devm_request_irq(dev, host->irq, rtd129x_irq, 0,
 			       dev_name(dev), host);
@@ -748,7 +803,12 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 
 	mmc->ops = &rtd129x_ops;
 	mmc->f_min = 400000;
-	mmc->f_max = 25000000;		/* stage 1 stays slow on purpose */
+	/*
+	 * High speed (50 MHz, 3.3 V) needs only the clock: the BSP sets no
+	 * sample or push point for it. The UHS modes need 1.8 V signalling and
+	 * tuning and are not done.
+	 */
+	mmc->f_max = host->crt ? 50000000 : 25000000;
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	/*
 	 * The card detect line is not wired to an interrupt here, so the core
@@ -756,6 +816,8 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 	 * is never noticed.
 	 */
 	mmc->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_NEEDS_POLL;
+	if (host->crt)
+		mmc->caps |= MMC_CAP_SD_HIGHSPEED;
 	mmc->max_blk_size = 512;
 	mmc->max_blk_count = RTD129X_BUF_LEN / 512;
 	mmc->max_segs = 128;		/* gathered into the bounce buffer */
