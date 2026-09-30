@@ -135,7 +135,7 @@ echo "MODULES=list"  > /etc/initramfs-tools/conf.d/modules.conf
 # other case and drop to an emergency shell.
 # /boot gets nofail so boot does not stall 90 seconds waiting for it.
 #
-# The third line is kvmd's MSD (virtual media) storage. PiKVM's own images
+# The third line is the kvmd MSD (virtual media) storage. The PiKVM images
 # give it a partition; here it is a directory on the rootfs, bind-mounted
 # read-only onto the path kvmd uses, and found by kvmd through the
 # X-kvmd.otgmsd-* option. It only matters when MSD is enabled, which on this
