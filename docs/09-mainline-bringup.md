@@ -152,7 +152,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 |-------|---------------|--------|
 | **M0** | BSP u-boot + clean 6.18.x + board DTS; serial console, single core | **done**, booted 2026-09-21 -- see §5 |
 | **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
-| **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | **built** 2026-09-25, not yet run on hardware -- see §9 |
+| **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | **done** 2026-10-01: gigabit, DHCP, ssh, kernels installed over the network, reboot via the watchdog -- see §9 |
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **host half done**, root on USB 2026-09-22 -- see §7. Type-C/gadget not started |
 | **M4** | kvmd + ustreamer on 6.18 | not started |
 | **M5** | hdmirx port | not started |
@@ -929,10 +929,10 @@ only thing between here and `CLAUDE.md`'s "flash a card and go".
 
 ## 9. M2, the gigabit port
 
-**Built, not yet run on hardware** (2026-09-25; the board was not at hand).
-The point of doing it next is the test loop: with the network up, a new
-kernel goes onto the running board over ssh (`scripts/push-kernel-mainline.sh`)
-and the card stays in the slot.
+**Done, verified on hardware 2026-10-01.** The point of doing it next was the
+test loop: with the network up, a new kernel goes onto the running board over
+ssh (`scripts/push-kernel-mainline.sh`) and the card stays in the slot. That
+now works end to end, reboot included.
 
 ### The driver: Realtek's, by way of a working 6.18 port
 
@@ -998,6 +998,61 @@ than `eth0`. `10-wired.network` matches on `Type=ether`, so DHCP does not care.
 - ssh was already there: `openssh-server`, root/pikvm (a test image only),
   and host keys generated on first boot by `bpikvm-firstboot`. The image still
   ships no keys; `build-rootfs.sh` fails the build if one appears.
+
+### Verified on hardware, 2026-10-01
+
+A freshly flashed card, first boot:
+
+```
+r8169 98016000.ethernet: chip revision b01, ETN clocks 00001f01, resets 00001f80
+r8169 98016000.ethernet: no usable MAC address (00:10:20:30:40:50), using a random one
+r8169 98016000.ethernet eth0: RTL8169SOC, XID 10900800 IRQ 17
+r8169 98016000.ethernet end0: renamed from eth0
+r8169 98016000.ethernet end0: link up
+bpi-w2-pikvm login:
+```
+
+- The chip is a **B01**, so the old always-A00 stub would have applied the
+  wrong PHY calibration. u-boot had left the ETN clocks on (bits 12:11 of
+  `0x1f01`) and both resets released (bits 10:9 of `0x1f80`), so the
+  already-running branch was taken this time. The hand-gating branch is
+  still there for a bootloader that does not.
+- u-boot does hand over its placeholder MAC. `networkctl` shows
+  `72:3b:2b:df:33:a8` from `99-default.link`, and the same address held
+  across all four boots so far (three power-ons, one watchdog reboot).
+- `end0`: 1000 Mb/s full duplex, DHCPv4 lease, `routable`. ssh logs in with
+  host keys that `bpikvm-firstboot` generated on the board. 300 MB over ssh
+  took 7.3 s (~41 MB/s, bounded by ssh itself). The only failed unit is
+  `kvmd-otg` (the Type-C gadget, M3's other half).
+- `push-kernel-mainline.sh --modules` on a 42 MiB kernel plus modules:
+  50 s, md5 checked before the swap.
+- The two `rtl_csiar_cond` lines at link-up are the harmless noise the
+  wd-mch-kernel port also reports.
+
+mDNS works on the board (`resolvectl query bpi-w2-pikvm.local` answers on
+`end0`). It did not reach this bench's PC because the PC sits on a different
+routed subnet, and mDNS is link-local. On a flat LAN the `.local` name works.
+Elsewhere, pass `BOARD_HOST=<ip>`.
+
+### Reboot: the watchdog had no restart handler
+
+The first `--reboot` ended with
+
+```
+reboot: Restarting system
+Reboot failed -- System halted
+```
+
+Nothing in mainline can reset the RTD129x. `rtd119x_wdt` probes (systemd even
+picks it up as `/dev/watchdog0` on the way down) but has no `.restart`. Patch
+0009 adds one, with the sequence from the BSP's `rtd129x_restart.c`: the
+watchdog fires after 0x800000 ticks of 27 MHz, ~310 ms. Now `systemctl reboot`
+goes `Restarting system` -> `U-Boot 2015.07` -> back on the network in about
+50 s.
+
+The kernel that performs a reboot is the one already running, not the one
+just pushed. So the first time this fix is installed over the network, one
+power cycle is still needed.
 
 ### How to test it
 
