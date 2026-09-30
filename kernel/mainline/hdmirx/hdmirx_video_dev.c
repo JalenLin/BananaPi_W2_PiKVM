@@ -395,6 +395,27 @@ void hdmirx_source_changed(struct v4l2_hdmi_dev *dev)
 	v4l2_event_queue(&dev->vdev, &ev);
 }
 
+/*
+ * Ask vb2 for cacheable MMAP buffers even when the client does not. With the
+ * default coherent allocation, arm64 maps the buffers into userspace as
+ * uncached memory, and a CPU JPEG encoder reading 4 MB frames out of that
+ * is several times slower. vb2 invalidates the cache itself when a buffer
+ * is dequeued, so the client sees what the DMA wrote.
+ */
+static int hdmirx_reqbufs(struct file *file, void *priv,
+			  struct v4l2_requestbuffers *p)
+{
+	p->flags |= V4L2_MEMORY_FLAG_NON_COHERENT;
+	return vb2_ioctl_reqbufs(file, priv, p);
+}
+
+static int hdmirx_create_bufs(struct file *file, void *priv,
+			      struct v4l2_create_buffers *p)
+{
+	p->flags |= V4L2_MEMORY_FLAG_NON_COHERENT;
+	return vb2_ioctl_create_bufs(file, priv, p);
+}
+
 static const struct v4l2_ioctl_ops hdmirx_ioctl_ops = {
 	.vidioc_querycap		= hdmirx_querycap,
 	.vidioc_enum_fmt_vid_cap	= hdmirx_enum_fmt,
@@ -416,8 +437,8 @@ static const struct v4l2_ioctl_ops hdmirx_ioctl_ops = {
 	.vidioc_dv_timings_cap		= hdmirx_dv_timings_cap,
 	.vidioc_enum_dv_timings		= hdmirx_enum_dv_timings,
 
-	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
-	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_reqbufs			= hdmirx_reqbufs,
+	.vidioc_create_bufs		= hdmirx_create_bufs,
 	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
 	.vidioc_querybuf		= vb2_ioctl_querybuf,
 	.vidioc_qbuf			= vb2_ioctl_qbuf,

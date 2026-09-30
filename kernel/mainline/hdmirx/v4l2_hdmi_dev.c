@@ -291,8 +291,12 @@ static int hdmirx_queue_init(struct v4l2_hdmi_dev *dev)
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->lock = &dev->mutex;
 	q->dev = dev->dev;
-	/* The MIPI DMA writes 32-bit addresses. */
-	q->gfp_flags = GFP_DMA32;
+	q->allow_cache_hints = 1;	/* see hdmirx_reqbufs() */
+	/*
+	 * The MIPI DMA takes 32-bit addresses; the DMA mask set in probe is
+	 * what keeps buffers below 4 GiB. No GFP_DMA32 here: the non-coherent
+	 * allocator refuses zone flags.
+	 */
 
 	return vb2_queue_init(q);
 }

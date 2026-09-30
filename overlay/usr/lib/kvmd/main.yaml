@@ -55,13 +55,14 @@ kvmd:
             # smallest of them that does not lose vertical chroma resolution
             # (it needs our semi-planar patch to ustreamer).
             - "--format=NV16"
-            # This driver does not implement VIDIOC_QUERY_DV_TIMINGS, so
-            # --dv-timings is unavailable and the resolution has to be
-            # hardcoded -- and it must match what the source actually sends.
-            # The EDID we serve (Realtek,edid-table in the DTS) prefers
-            # 1080p60, so normal negotiation lands here. If your source
-            # always outputs something else, change this line; check the
-            # current value with hdmirx-info.
+            # Follow the source's resolution. The mainline driver
+            # (kernel-6.18 branch) implements VIDIOC_QUERY_DV_TIMINGS and
+            # returns ENOLINK without a signal, which ustreamer shows as "no
+            # signal" and retries. The BSP 4.9 driver has no DV timings;
+            # ustreamer then falls back to --resolution below, which has to
+            # match what the source sends -- the EDID we serve prefers
+            # 1080p60 (check with hdmirx-info).
+            - "--dv-timings"
             - "--resolution=1920x1080"
             # Encoding is on the CPU: none of the SoC's codec engines exposes
             # a V4L2 M2M interface (the BSP provides vendor ioctls instead).

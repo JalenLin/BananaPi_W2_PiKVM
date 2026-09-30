@@ -154,8 +154,8 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M1** | `smp_spin_table.c` hunk, `irq-rtd129x.c`; the rbus `reg` turned out not to need dropping | **done**, booted 2026-09-22 -- see §6 |
 | **M2** | `NET_VENDOR_REALTEK` Kconfig unlock + `r8169soc.c` | **done** 2026-10-01: gigabit, DHCP, ssh, kernels installed over the network, reboot via the watchdog -- see §9 |
 | **M3** | USB DT + the two probe quirks, Type-C as peripheral | **done**: host ports 2026-09-22 (and on an SD boot 2026-10-01); Type-C gadget enumerated by the target and kvmd-otg up 2026-10-01 -- see §7 |
-| **M4** | kvmd + ustreamer on 6.18 | not started |
-| **M5** | hdmirx port | not started |
+| **M4** | kvmd + ustreamer on 6.18 | **done** 2026-10-01: kvmd starts ustreamer on demand, keyboard input reaches the target and shows up in the capture -- see §10 |
+| **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified, ~5 MB/s -- see §8. Speed later |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
@@ -1176,7 +1176,139 @@ out (`RTL_PROC`; their `proc_ops` conversion was never done).
 
 ---
 
-## 10. Sources
+## 10. M5, HDMI capture (and M4, kvmd on top of it)
+
+**Done, verified on hardware 2026-10-01.** The source is the bench's
+Raspberry Pi 3 running Kodi (LibreELEC). Its HDMI output goes to the board's
+HDMI IN, and its USB-A port goes to the board's Type-C, where it is the
+target for the HID gadget.
+
+### What was carried and what was rewritten
+
+`kernel/mainline/hdmirx` is Realtek's BSP `rtk_hdmirx` (rtd129x). About
+5,600 lines of C plus 15,000 lines of register headers. The split:
+
+- **Kept as the BSP has it:** everything below V4L2. That is `rx_drv/` (the
+  HDMI MAC/PHY state machines, EDID, measurement), the RX and MIPI wrappers
+  (the MIPI wrapper is the DMA engine that writes frames to memory), and the
+  order of the clock, reset and power steps.
+- **Rewritten:** the V4L2 side. The BSP ran every ioctl through its own
+  switch statement with its own 32-bit compat layer, created the vb2 queue
+  inside REQBUFS, and reached into vb2-vmalloc's private structs for
+  USERPTR. It is now `v4l2_ioctl_ops` plus the `vb2_ioctl_*` helpers, and a
+  queue set up once at probe with dma-contig, MMAP and DMABUF. The main
+  branch's fixes carried over as behaviour: G_FMT reports the detected
+  input, S_FMT returns bytesperline/sizeimage, and the output only scales
+  down.
+- **New:** `QUERY_DV_TIMINGS`, with the full CEA timings from the AVI VIC
+  through `v4l2_find_dv_timings_cea861_vic()`, and
+  `V4L2_EVENT_SOURCE_CHANGE`. ustreamer now runs with `--dv-timings` and
+  follows the source by itself, where the main branch had to hardcode
+  1920x1080.
+- **Replaced:**
+  - ION, used only for a scratch frame the DMA writes when no buffer is
+    queued, became `dma_alloc_coherent`.
+  - Android's switch class became sysfs attributes next to
+    `hdmirx_video_info`, plus the event above.
+  - HDCP 1.4's SHA-1 now comes from lib/crypto.
+  - HDCP 2.2 and the TEE path are gone.
+- **remove() tears down.** The BSP's did nothing, so the module can now be
+  reloaded. It is built as a module (`CONFIG_VIDEO_RTD129X_HDMIRX=m`), and a
+  change to it is one `.ko` upload and an rmmod/modprobe.
+
+### Clocks, resets, power, pins
+
+- **Clocks.** The CRT gate driver from the USB work, extended to take any
+  run of 32-bit gate registers, also covers ISO `0x9800708c` for the four
+  CBUS clocks. The node asks for 7 clocks and 7 resets by name, as the BSP
+  did.
+- **SRAM power.** The BSP asked its power-control core for
+  `pctrl_disp_hdmi_rx`/`pctrl_disp_mipi`, but those register as
+  `pctrl_hdmirx_pd`/`pctrl_mipi_pd`. The lookups returned NULL, so every
+  power_on/off was a no-op. CRT `SRAM_PWR2` (0x98000368) reads 0 (all
+  channels on) on this board. The driver clears its channels on enable and
+  never powers them off, which is what the BSP really did.
+- **HPD.** ISO GPIO 22, through an inverter. Mainline's `gpio-rtd` would
+  drive it, but it claims the ISO interrupt-status window (0x000-0x0e7) as a
+  second resource. That window overlaps `iso_reset@88` and the gate register
+  at 0x8c, so it cannot be instantiated as `rtd129x.dtsi` stands. The driver
+  writes the two GPIO registers itself.
+- **DDC pins.** ISO MUXPAD 0x314 bits 3:0 are set to I2C6 at probe, the fix
+  for the main branch's blocker 3. Mainline has no RTD129x pinctrl either.
+- **Property naming.** The property is `realtek,hpd-iso-pin`, not
+  `...-gpio`. fw_devlink parses any `-gpio` property as a phandle and
+  complained `could not find phandle 22`.
+- **EDID.** Realtek's default table and its HDMI 2.0 variant, moved from the
+  BSP's one-byte-per-cell property into DTS byte strings (`realtek,edid`,
+  `realtek,edid-hdmi20`). Both block checksums were verified when converting.
+
+### The detour: the source had stopped sending
+
+The first loads probed cleanly: `/dev/video0` appeared, CBUS saw 5V and HPD
+went high. But nothing was detected. The PHY's clock measurement
+(`REGD43.p0_ck_md_count`) read 0-8, where the driver needs more than 116.
+Clocks, resets, LDO and termination all read back as configured.
+
+An A/B test settled it. The BSP 4.9 kernel went back on the card (over ssh)
+and showed exactly the same `Cable Plugged` / `Set HPD(1)` / nothing. Then
+the Pi alone was rebooted while the board held HPD high, and the BSP
+detected 1080p60 within two seconds. Kodi on this Pi stops driving HDMI
+after enough hotplug churn, and today's many board reboots were exactly
+that. Back on the mainline kernel, with the Pi outputting again:
+
+```
+[HDMI RX]PLL Setting b(1407) cd(0) TMDS(148MHz) P(1) 2X(1) 6G_flag(0)
+[HDMI RX]Check resolution match => Width(1920) Height(1080) VIC(16)
+[HDMI RX]Polarity detect done: hor(1920) ver(1080) color(RGB) I/P(Prog)
+[HDMI RX]video state 1
+
+# v4l2-ctl --query-dv-timings
+	Active width: 1920
+	Active height: 1080
+	Total width: 2200
+	Total height: 1125
+	Pixelclock: 148500000 Hz (60.00 frames per second)
+```
+
+A frame captured with `v4l2-ctl --stream-mmap` and converted from NV16 is
+the Kodi home screen, with correct colours and text.
+
+### Throughput
+
+| | |
+|---|---|
+| Capture (driver, `captured_fps`) | 58-60 fps |
+| JPEG to one client, 3 workers, q80 | **22.3 fps**, 49% CPU |
+| JPEG to one client, 4 workers | 24.0 fps, 56% CPU |
+
+That matches the main branch on BSP 4.9 (22-24 fps, 58% CPU). Getting there
+took one fix. vb2-dma-contig's default MMAP buffers are coherent
+allocations, which arm64 maps into userspace uncached, and a CPU JPEG
+encoder reading 4 MB frames out of uncached memory ran at 15 fps. The
+driver now asks for `V4L2_MEMORY_FLAG_NON_COHERENT` on the client's behalf
+(`allow_cache_hints`, REQBUFS/CREATE_BUFS wrappers). vb2 then hands out
+cached buffers and invalidates them on DQBUF, and that brought 20-22 fps.
+It must not be combined with `GFP_DMA32` in `gfp_flags`: the non-coherent
+allocator refuses zone flags (`dma alloc of size 4177920 failed`). The DMA
+mask already keeps buffers below 4 GiB.
+
+### M4: kvmd
+
+kvmd needed nothing new. The udev rule that maps the device carrying
+`hdmirx_video_info` to `/dev/kvmd-video` works unchanged. With
+`--dv-timings` added to the streamer command in `main.yaml` (and
+`--resolution` kept as the fallback for the BSP kernel), acting as a Web UI
+client -- a `/api/ws?stream=1` session -- makes kvmd start ustreamer, and
+`/api/streamer/snapshot` returns the screen. Then the whole loop:
+`POST /api/hid/events/send_key?key=ArrowDown` goes out the Type-C gadget to
+the Pi, and the next snapshot shows Kodi's menu highlight moved from
+Add-ons to Pictures.
+
+HID reports `keyboard online: true, mouse online: false`. The mouse is off by
+configuration, as on the main branch: this dwc3 has too few endpoints for
+both.
+
+## 11. Sources
 
 | Source | Used for |
 |--------|----------|
