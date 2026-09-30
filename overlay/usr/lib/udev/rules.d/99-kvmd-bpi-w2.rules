@@ -8,8 +8,10 @@ SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", \
     SYMLINK+="kvmd-video", GROUP="kvmd", MODE="0660"
 
 # USB gadget HID. kvmd's otg plugin opens these fixed names, mirroring
-# 99-kvmd.rules from upstream's platform package. This board only has
-# hidg0/hidg1 (keyboard + mouse) and no hidg2 -- dwc3 does not have enough IN
-# endpoints; see /usr/lib/kvmd/main.yaml.
+# 99-kvmd.rules from upstream's platform package. With the combined HID (the
+# default, see /usr/lib/kvmd/main.yaml) there is only hidg0, carrying both the
+# keyboard and the mouse; with combined: false, hidg0 is the keyboard and
+# hidg1 the mouse. There is never a hidg2 -- dwc3 does not have enough IN
+# endpoints.
 KERNEL=="hidg0", GROUP="kvmd", SYMLINK+="kvmd-hid-keyboard"
 KERNEL=="hidg1", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse"

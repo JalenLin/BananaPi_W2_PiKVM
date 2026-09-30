@@ -1,0 +1,283 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] otg: keyboard and mouse as one HID function; MSD on a mainline kernel
+
+The RTD1296's dwc3 has two IN endpoints besides ep0. The keyboard and the
+mouse take one each, so mass storage never fit.
+
+Combined HID (kvmd.hid.combined, default off): kvmd-otg builds a single HID
+function whose descriptor is the keyboard's (Report ID 1) followed by the
+mouse's (Report ID 2) -- the report_id parameters of make_keyboard_hid() and
+make_mouse_hid() were already there, unused. The HID plugin writes both
+through the keyboard device, prefixing each report with its ID, and strips
+the ID from the LED output reports it reads. That frees an IN endpoint for
+MSD. The cost: a device with Report IDs cannot be a boot-protocol keyboard,
+so firmware that only speaks boot protocol will not see it.
+
+MSD on this board's mainline kernel:
+- lun.0/inquiry_string_cdrom is a Raspberry Pi kernel attribute; mainline
+  f_mass_storage has only inquiry_string. Writing it is now optional.
+- The image has no partition for MSD storage, so it is a bind mount of a
+  directory on the rootfs. The remount helper remounts a bind mount with
+  "bind" (otherwise mount(8) remounts the rootfs underneath and fails as
+  busy), and the MSD plugin detects mountpoints through mountinfo, because
+  os.path.ismount() cannot see a bind mount on the same filesystem -- it
+  skipped remount_rw and uploads failed with EROFS.
+
+diff --git a/kvmd/apps/otg/__init__.py b/kvmd/apps/otg/__init__.py
+index f42e54e..746a4ac 100644
+--- a/kvmd/apps/otg/__init__.py
++++ b/kvmd/apps/otg/__init__.py
+@@ -271,6 +271,31 @@ class _GadgetConfig:
+         desc = ("Absolute" if absolute else "Relative") + " Mouse"
+         self.__add_hid(desc, starter, start, remote_wakeup, make_mouse_hid(absolute, horizontal_wheel))
+ 
++    def add_keyboard_and_mouse(
++        self,
++        starter: list[str],
++        start: bool,
++        remote_wakeup: bool,
++        absolute: bool,
++        horizontal_wheel: bool,
++    ) -> None:
++
++        # One HID function for both, told apart by Report ID, so it takes one IN
++        # endpoint instead of two. The IDs must match the HID plugin's.
++        # A device with Report IDs cannot offer the boot protocol, so this is
++        # not a boot keyboard: firmware that only speaks boot protocol will
++        # not see it. The OS, and firmware with a HID report parser, will.
++        keyboard = make_keyboard_hid(report_id=1)
++        mouse = make_mouse_hid(absolute, horizontal_wheel, report_id=2)
++        hid = Hid(
++            protocol=0,
++            subclass=0,
++            report_length=(max(keyboard.report_length, mouse.report_length) + 1),
++            report_descriptor=(keyboard.report_descriptor + mouse.report_descriptor),
++        )
++        desc = "Keyboard & " + ("Absolute" if absolute else "Relative") + " Mouse"
++        self.__add_hid(desc, starter, start, remote_wakeup, hid)
++
+     def __add_hid(self, desc: str, starter: list[str], start: bool, remote_wakeup: bool, hid: Hid) -> None:
+         func = f"hid.usb{self.__hid_instance}"
+         func_path = self.__create_function(func)
+@@ -308,7 +333,9 @@ class _GadgetConfig:
+         _write(join(func_path, "lun.0/ro"), int(not rw))
+         _write(join(func_path, "lun.0/removable"), int(removable))
+         _write(join(func_path, "lun.0/nofua"), int(not fua))
+-        _write(join(func_path, "lun.0/inquiry_string_cdrom"), inquiry_string_cdrom)
++        # inquiry_string_cdrom comes from the Raspberry Pi kernel; mainline has
++        # only inquiry_string, and uses it for both modes.
++        _write(join(func_path, "lun.0/inquiry_string_cdrom"), inquiry_string_cdrom, optional=True)
+         _write(join(func_path, "lun.0/inquiry_string"), inquiry_string_flash)
+         if user != "root":
+             _chown(join(func_path, "lun.0/cdrom"), user)
+@@ -416,7 +443,12 @@ def _cmd_start(config: Section) -> None:  # pylint: disable=too-many-statements,
+     gc = _GadgetConfig(gadget_path, profile_path, config.otg.meta, config.otg.endpoints)
+     cod = config.otg.devices
+ 
+-    if config.kvmd.hid.type == "otg":
++    if config.kvmd.hid.type == "otg" and config.kvmd.hid.combined:
++        logger.info("===== HID-Keyboard & Mouse (combined) =====")
++        ckhm = config.kvmd.hid.mouse
++        gc.add_keyboard_and_mouse(["hid", "keyboard"], cod.hid.keyboard.start,
++                                  config.otg.remote_wakeup, ckhm.absolute, ckhm.horizontal_wheel)
++    elif config.kvmd.hid.type == "otg":
+         logger.info("===== HID-Keyboard =====")
+         gc.add_keyboard(["hid", "keyboard"], cod.hid.keyboard.start, config.otg.remote_wakeup)
+         logger.info("===== HID-Mouse =====")
+diff --git a/kvmd/helpers/remount/__init__.py b/kvmd/helpers/remount/__init__.py
+index 255e48b..851b2c1 100644
+--- a/kvmd/helpers/remount/__init__.py
++++ b/kvmd/helpers/remount/__init__.py
+@@ -38,11 +38,27 @@ def _log(msg: str) -> None:
+     print(msg, file=sys.stderr)
+ 
+ 
++def _is_bind_mount(path: str) -> bool:
++    # A bind mount of a directory shows that directory, not "/", as its root
++    # in mountinfo. Such a mount must be remounted with "bind", or mount(8)
++    # remounts the whole filesystem underneath it -- the rootfs, if the storage
++    # is a directory on it, which then fails as busy.
++    path = os.path.realpath(path)
++    root = "/"
++    with open("/proc/self/mountinfo") as file:
++        for line in file:
++            fields = line.split()
++            if len(fields) > 4 and fields[4] == path:
++                root = fields[3]
++    return (root != "/")
++
++
+ def _remount(path: str, rw: bool) -> None:
+     mode = ("rw" if rw else "ro")
+     _log(f"Remounting {path} to {mode.upper()}-mode ...")
++    opts = (f"remount,bind,{mode}" if _is_bind_mount(path) else f"remount,{mode}")
+     try:
+-        subprocess.check_call(["/bin/mount", "--options", f"remount,{mode}", path])
++        subprocess.check_call(["/bin/mount", "--options", opts, path])
+     except subprocess.CalledProcessError as ex:
+         raise SystemExit(f"Can't remount: {ex}")
+ 
+diff --git a/kvmd/plugins/hid/otg/__init__.py b/kvmd/plugins/hid/otg/__init__.py
+index fffa443..9ef5b8b 100644
+--- a/kvmd/plugins/hid/otg/__init__.py
++++ b/kvmd/plugins/hid/otg/__init__.py
+@@ -42,32 +42,50 @@ from .mouse import MouseProcess
+ 
+ 
+ # =====
++# Report IDs when the keyboard and the mouse share one HID function;
++# kvmd-otg builds the matching descriptor.
++_COMBINED_KEYBOARD_ID = 1
++_COMBINED_MOUSE_ID = 2
++
++
+ class Plugin(BaseHid):  # pylint: disable=too-many-instance-attributes
+     def __init__(self, c: Section) -> None:
+         super().__init__(c)
+ 
+         self.__notifier = aiomulti.AioMpNotifier()
+ 
+-        def make_kwargs(s: Section) -> dict:
++        def make_kwargs(s: Section, device: str="", report_id: (int | None)=None) -> dict:
+             return {
+                 "notifier":       self.__notifier,
+                 "noop":           c.noop,
+-                "device_path":    s.device,
++                "device_path":    (device or s.device),
+                 "select_timeout": s.select_timeout,
+                 "queue_timeout":  s.queue_timeout,
+                 "write_retries":  s.write_retries,
++                "report_id":      report_id,
+             }
+ 
+-        self.__keyboard_proc = KeyboardProcess(**make_kwargs(c.keyboard))
++        # combined: the keyboard and the mouse are one HID function (one IN
++        # endpoint) told apart by Report ID, both written through the keyboard
++        # device. See kvmd-otg for the descriptor. For UDCs with too few
++        # endpoints for a function each.
++        self.__keyboard_proc = KeyboardProcess(**make_kwargs(
++            c.keyboard,
++            report_id=(_COMBINED_KEYBOARD_ID if c.combined else None),
++        ))
+         self.__mouse_current = self.__mouse_proc = MouseProcess(
+             absolute=c.mouse.absolute,
+             horizontal_wheel=c.mouse.horizontal_wheel,
+-            **make_kwargs(c.mouse),
++            **make_kwargs(
++                c.mouse,
++                device=(c.keyboard.device if c.combined else ""),
++                report_id=(_COMBINED_MOUSE_ID if c.combined else None),
++            ),
+         )
+ 
+         self.__mouse_alt_proc: (MouseProcess | None) = None
+         self.__mouses: dict[str, MouseProcess] = {}
+-        if c.mouse_alt.device:
++        if c.mouse_alt.device and not c.combined:
+             self.__mouse_alt_proc = MouseProcess(
+                 absolute=(not c.mouse.absolute),
+                 horizontal_wheel=c.mouse_alt.horizontal_wheel,
+@@ -112,6 +130,7 @@ class Plugin(BaseHid):  # pylint: disable=too-many-instance-attributes
+                 "horizontal_wheel": Option(True, type=valid_bool),
+             },
+             "noop": Option(False, type=valid_bool),
++            "combined": Option(False, type=valid_bool),
+             **super().get_plugin_options(),
+         }
+ 
+diff --git a/kvmd/plugins/hid/otg/device.py b/kvmd/plugins/hid/otg/device.py
+index 3de460a..e746773 100644
+--- a/kvmd/plugins/hid/otg/device.py
++++ b/kvmd/plugins/hid/otg/device.py
+@@ -53,10 +53,15 @@ class BaseDeviceProcess:  # pylint: disable=too-many-instance-attributes
+         queue_timeout: float,
+         write_retries: int,
+         noop: bool,
++        report_id: (int | None)=None,
+     ) -> None:
+ 
+         self.__name = name
+         self.__read_size = read_size
++        # Set when this device shares one HID function with another and the
++        # report descriptor carries Report IDs: every report written gets the
++        # ID in front, and the ID is stripped from what is read back.
++        self.__report_id = report_id
+ 
+         self.__device_path = device_path
+         self.__select_timeout = select_timeout
+@@ -176,6 +181,9 @@ class BaseDeviceProcess:  # pylint: disable=too-many-instance-attributes
+         assert self.__fd >= 0
+         logger = self.__get_logger()
+ 
++        if self.__report_id is not None:
++            report = bytes([self.__report_id]) + report
++
+         try:
+             written = os.write(self.__fd, report)
+         except Exception as ex:
+@@ -209,11 +217,16 @@ class BaseDeviceProcess:  # pylint: disable=too-many-instance-attributes
+ 
+             if read:
+                 try:
+-                    report = os.read(self.__fd, self.__read_size)
++                    report = os.read(self.__fd, self.__read_size + (self.__report_id is not None))
+                 except Exception as ex:
+                     if not tools.is_oserror(ex, errno.EAGAIN, errno.ESHUTDOWN):
+                         logger.exception("Can't read report from HID-%s", self.__name)
+                 else:
++                    if self.__report_id is not None:
++                        # With Report IDs the host prefixes output reports with one
++                        if len(report) != self.__read_size + 1 or report[0] != self.__report_id:
++                            continue
++                        report = report[1:]
+                     self._process_read_report(report)
+ 
+     def __ensure_device(self) -> bool:
+diff --git a/kvmd/plugins/msd/otg/fs.py b/kvmd/plugins/msd/otg/fs.py
+index 897c1e9..98a2dca 100644
+--- a/kvmd/plugins/msd/otg/fs.py
++++ b/kvmd/plugins/msd/otg/fs.py
+@@ -38,11 +38,29 @@ async def find_closest_mountpoint(path: str) -> str:
+ 
+ def _find_closest_mountpoint(path: str) -> str:
+     tools.check_abs(path)
+-    while not os.path.ismount(path):
++    while not is_mountpoint(path):
+         path = os.path.dirname(path)
+     return path
+ 
+ 
++def is_mountpoint(path: str) -> bool:
++    # os.path.ismount() compares devices and inodes, so it cannot see a bind
++    # mount of a directory on the same filesystem -- the MSD storage on an
++    # image whose rootfs has no separate partition for it. mountinfo can.
++    if os.path.ismount(path):
++        return True
++    path = os.path.realpath(path)
++    try:
++        with open("/proc/self/mountinfo") as file:
++            for line in file:
++                fields = line.split()
++                if len(fields) > 4 and fields[4] == path:
++                    return True
++    except OSError:
++        pass
++    return False
++
++
+ # =====
+ async def walk_storage(dir_path: str) -> AsyncGenerator[tuple[str, (list[str] | None)]]:
+     tools.check_abs(dir_path)
+diff --git a/kvmd/plugins/msd/otg/storage.py b/kvmd/plugins/msd/otg/storage.py
+index 12ffba6..b8911b7 100644
+--- a/kvmd/plugins/msd/otg/storage.py
++++ b/kvmd/plugins/msd/otg/storage.py
+@@ -258,7 +258,7 @@ class Storage:
+                 _check_image_name(name)
+                 images[name] = await _make_image(name, file_path, True, (mnt_path != root_path))
+ 
+-            if dir_path != root_path and os.path.ismount(dir_path):
++            if dir_path != root_path and fs.is_mountpoint(dir_path):
+                 name = os.path.relpath(dir_path, root_path)
+                 _check_image_name(name)
+                 parts[name] = await _make_part(name, dir_path)

@@ -134,11 +134,19 @@ echo "MODULES=list"  > /etc/initramfs-tools/conf.d/modules.conf
 # (mmcblk0) or USB (sda), and a hardcoded node would fail to mount in the
 # other case and drop to an emergency shell.
 # /boot gets nofail so boot does not stall 90 seconds waiting for it.
+#
+# The third line is kvmd's MSD (virtual media) storage. PiKVM's own images
+# give it a partition; here it is a directory on the rootfs, bind-mounted
+# read-only onto the path kvmd uses, and found by kvmd through the
+# X-kvmd.otgmsd-* option. It only matters when MSD is enabled, which on this
+# board needs the combined keyboard+mouse HID -- see /usr/lib/kvmd/main.yaml
+# and patches/kvmd/0002.
 cat > /etc/fstab <<EOF
 LABEL=BPI-ROOT  /      ext4  defaults,noatime         0 1
 LABEL=BPI-BOOT  /boot  vfat  defaults,noatime,nofail  0 2
+/var/lib/kvmd/msd.data  /var/lib/kvmd/msd  none  bind,nodev,nosuid,noexec,ro,X-kvmd.otgmsd-user=kvmd  0 0
 EOF
-mkdir -p /boot
+mkdir -p /boot /var/lib/kvmd/msd /var/lib/kvmd/msd.data
 
 # Serial console: the BSP bootargs specify ttyS0,115200
 systemctl enable serial-getty@ttyS0.service

@@ -5,16 +5,41 @@
 
 kvmd:
     hid:
-        # Patch 0006 pins the RTD1296's Type-C port to peripheral mode, the
-        # kernel has CONFIG_USB_CONFIGFS_F_HID, and kvmd-otg creates the
+        # The Type-C port is a USB device (the BSP kernel: patch 0006; the
+        # mainline kernel: dr_mode = "peripheral" in the board DTS), the
+        # kernel has the configfs HID function, and kvmd-otg builds the
         # gadget.
         type: otg
 
+        # USB endpoints decide what fits on this board: the RTD1296's dwc3
+        # has two IN endpoints besides ep0 (see the otg section at the end).
+        #
+        # combined: true (the default here) makes the keyboard and the mouse
+        # ONE HID function, told apart by Report ID (patches/kvmd/0002). That
+        # uses one IN endpoint and leaves the other for virtual media, so
+        # keyboard, mouse and MSD all work at once.
+        #
+        # The cost: a HID device with Report IDs cannot be a boot-protocol
+        # keyboard, and much BIOS/UEFI setup firmware only understands boot
+        # protocol. Typing in the target's firmware menus may not work in
+        # this mode; in the running OS it does. If you need the firmware,
+        # put this in /etc/kvmd/override.yaml:
+        #
+        #   kvmd:
+        #       hid:
+        #           combined: false
+        #       msd:
+        #           type: disabled
+        #   otg:
+        #       endpoints: 2
+        #
+        # then run: systemctl stop kvmd; systemctl restart kvmd-otg; systemctl start kvmd
+        # That gives a separate boot keyboard and mouse, and no MSD.
+        combined: true
+
         mouse_alt:
-            # Disable the second (relative-positioning) mouse. dwc3 only has
-            # 2 usable IN endpoints, and keyboard + mouse already use them
-            # both -- see the otg section at the end of this file. An empty
-            # string stops kvmd from even creating hid.usb2.
+            # No second (relative-positioning) mouse: it would need a third IN
+            # endpoint. An empty string stops kvmd from creating it.
             device: ""
 
     atx:
@@ -22,28 +47,10 @@ kvmd:
         type: disabled
 
     msd:
-        # Virtual media (mass storage) is also a USB gadget and the kernel
-        # does have CONFIG_USB_F_MASS_STORAGE=y, but it **cannot coexist with
-        # the mouse**: dwc3 has only 2 usable IN endpoints and keyboard +
-        # mouse consume both (see the otg section at the end of this file).
-        #
-        # If virtual media matters more to you than the mouse, put this in
-        # /etc/kvmd/override.yaml:
-        #
-        #   kvmd:
-        #       msd:
-        #           type: otg
-        #       hid:
-        #           mouse:
-        #               device: ""
-        #   otg:
-        #       devices:
-        #           hid:
-        #               mouse:
-        #                   start: false
-        #
-        # then run: systemctl restart kvmd-otg kvmd
-        type: disabled
+        # Virtual media. Its storage is /var/lib/kvmd/msd, a read-only bind
+        # mount of /var/lib/kvmd/msd.data on the rootfs (see /etc/fstab);
+        # kvmd remounts it read-write only while writing an image.
+        type: otg
 
     streamer:
         cmd:
@@ -93,21 +100,17 @@ kvmd:
 
 otg:
     # The RTD1296's dwc3 has very few usable endpoints.
-    # GHWPARAMS3 = 0x030c6485 → 6 endpoints in total, 3 of them IN. After the
+    # GHWPARAMS3 = 0x030c6485 -> 6 endpoints in total, 3 of them IN. After the
     # control endpoint ep0 that leaves 2 IN + 2 OUT (debugfs likewise shows
     # only ep1in/ep1out/ep2in/ep2out).
     #
-    # Kernel 4.9's f_hid has no no_out_endpoint configfs attribute (kvmd tries
-    # to write it and skips on failure), so each HID function always takes
-    # 1 IN + 1 OUT and at most two functions fit.
+    # kvmd counts endpoints per function: HID 1, MSD 2. With the combined HID
+    # that is 1 + 2 = 3, which the hardware holds -- the HID function sets
+    # no_out_endpoint (the mainline kernel supports it), so it takes one IN,
+    # and MSD takes the other IN plus an OUT.
     #
-    # Without this setting kvmd adds all three of keyboard + mouse +
-    # mouse_alt to the config, the third hidg_bind fails, and the entire
-    # gadget then fails to bind to the UDC:
-    #   configfs-gadget gadget: hidg_bind FAILED
-    #   configfs-gadget 98020000.dwc3_drd: failed to start kvmd: -19
-    #
-    # With it set to 2, kvmd skips what will not fit and logs
-    #   Function 'hid.usb2' not be started: No available endpoints
-    # after which keyboard + mouse bind normally.
-    endpoints: 2
+    # With separate keyboard and mouse (combined: false) set this to 2: two
+    # HID functions already use both IN endpoints. The BSP 4.9 kernel's f_hid
+    # has no no_out_endpoint, so each HID function there also takes an OUT;
+    # 2 is right for that kernel too.
+    endpoints: 3

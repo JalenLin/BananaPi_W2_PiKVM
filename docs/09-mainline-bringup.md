@@ -1309,15 +1309,59 @@ The absolute mouse works too. Walking it to the centre through
 (`/api/hid` still says `mouse online: false`. That is kvmd's flag, not the
 device.)
 
-What the new kernel does and does not change about endpoints. 6.18's `f_hid`
-has `no_out_endpoint`, and kvmd-otg now sets it (`no_out_endpoint=1` on both
-functions), so the HID functions no longer take OUT endpoints. But this dwc3
-has two IN endpoints besides ep0 (`ep1in`, `ep2in` in debugfs, the same
-`GHWPARAMS3` as on 4.9), and the keyboard and mouse hold one each. Mass
-storage and the relative mouse (`mouse_alt`) each need an IN endpoint too,
-so they still do not fit alongside both. Virtual media still means giving
-up the mouse (the recipe is in `main.yaml`), unless keyboard and mouse are
-ever merged into one HID function sharing one IN endpoint.
+### Keyboard, mouse and virtual media at once: one HID function
+
+The endpoint budget is the hard limit. This dwc3 has two IN endpoints
+besides ep0 (`ep1in`, `ep2in` in debugfs; `GHWPARAMS3` is the same as on
+4.9), and a separate keyboard and mouse hold one each. 6.18's `f_hid` has
+`no_out_endpoint`, and kvmd-otg sets it, which frees the OUT endpoints, but
+mass storage also needs an IN endpoint. So on the main branch the choice was
+mouse or MSD.
+
+`patches/kvmd/0002` merges the keyboard and the mouse into **one HID
+function**. Its descriptor is the keyboard's with Report ID 1 followed by
+the mouse's with Report ID 2. (`make_keyboard_hid()`/`make_mouse_hid()`
+upstream already took a `report_id`; nothing used it.) The HID plugin
+writes both through `/dev/hidg0` with the ID in front of each report, and
+strips the ID from the keyboard LED reports it reads back. One IN endpoint
+for HID, one IN + one OUT for MSD: kvmd's budget is `otg.endpoints: 3`.
+
+Verified with the Pi as the target, all three at once:
+
+- Gadget: `hid.usb0` + `mass_storage.usb0`, UDC `configured`. `/api/hid`
+  reports keyboard and mouse online.
+- Keyboard: ArrowLeft, ArrowUp moves Kodi's focus to the side menu and up
+  to Add-ons.
+- Mouse: an absolute move puts the pointer where it was sent, and Kodi
+  highlights what is under it.
+- MSD: a 16 MB FAT image uploaded through `/api/msd/write` and attached as
+  a flash drive. LibreELEC pops up "Mounted removable storage device --
+  PIKVMTEST".
+
+**The trade-off, and why it is a setting.** A HID device with Report IDs
+cannot be a boot-protocol keyboard, and much BIOS/UEFI setup firmware only
+understands boot protocol. In this mode, typing in the target's firmware
+menus may not work; in the OS it does. (Not testable here: the Pi has no
+firmware setup screen.) The image defaults to `kvmd.hid.combined: true`
+with MSD on. `main.yaml` carries the four-line override back to a separate
+boot keyboard and mouse without MSD.
+
+Getting MSD itself working on this image took three more fixes, all in
+0002:
+
+- kvmd-otg wrote `lun.0/inquiry_string_cdrom`, a Raspberry Pi kernel
+  attribute that mainline `f_mass_storage` does not have. It died with
+  EACCES halfway through building the gadget. The write is now optional.
+- There is no MSD partition. The storage is `/var/lib/kvmd/msd.data`,
+  bind-mounted read-only onto `/var/lib/kvmd/msd` by `/etc/fstab` with
+  `X-kvmd.otgmsd-user=kvmd` (`build-rootfs.sh`). The remount helper did
+  `mount -o remount,ro` on it, which remounts the filesystem underneath (the
+  rootfs) and fails as busy. It now adds `bind` when mountinfo shows a bind
+  mount.
+- kvmd's MSD plugin finds the storage's mountpoint with
+  `os.path.ismount()`, which cannot see a bind mount on the same
+  filesystem. It therefore skipped remount-rw before an upload, which failed
+  with EROFS. It now also consults `/proc/self/mountinfo`.
 
 ## 11. Sources
 
