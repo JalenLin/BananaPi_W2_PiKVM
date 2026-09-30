@@ -1363,6 +1363,31 @@ Getting MSD itself working on this image took three more fixes, all in
   filesystem. It therefore skipped remount-rw before an upload, which failed
   with EROFS. It now also consults `/proc/self/mountinfo`.
 
+### The image, flashed to a fresh card (2026-10-01)
+
+Everything above was verified by pushing kernels and files to one running
+card. The deliverable was then checked as a user would get it:
+`make rootfs && make image-mainline`, `build/bpiw2-pikvm-mainline.img`
+written to a new card, booted with no other step.
+
+- First boot: `bpikvm-firstboot` generated three ssh host keys (the image
+  ships none), the rootfs grew to fill the card (29 GB), and DHCP gave a new
+  address. The card has its own machine-id, so it has its own MAC as well.
+- `systemctl --failed` is empty. kvmd, kvmd-otg, kvmd-nginx and ssh are all
+  active.
+- Without anything done by hand: the gadget is `hid.usb0` (combined) plus
+  `mass_storage.usb0` and `configured` by the target, HDMI is 1080p60 Ready,
+  and the MSD storage is mounted read-only.
+- Through kvmd, with the same scripts as before: snapshot; keyboard (Kodi
+  woke up and moved focus); mouse (hover highlight); and an uploaded image
+  that the Pi mounted as `NEWCARD`.
+
+The very first power-on went silent on the serial console in the middle of
+u-boot's countdown. The second power-on booted normally. Linux had in fact
+come up the first time too, because `firstboot-done` was already there on
+the second boot. The silence was on the console path, not a hang, and is
+put down to the card slot and serial capture rather than the image.
+
 ## 11. Sources
 
 | Source | Used for |
