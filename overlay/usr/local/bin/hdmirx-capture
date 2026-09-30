@@ -30,13 +30,16 @@ if [ -z "$VDEV_NAME" ]; then
     echo "No rtk_hdmirx v4l2 device found (no video* has hdmirx_video_info)"
     echo "Things to check:"
     echo "  1) dmesg | grep -i 'HDMI RX'"
-    echo "  2) whether hdmirx@98034000's status is okay in the DTB"
-    echo "  3) whether the kernel has CONFIG_RTK_HDMIRX=y"
+    echo "  2) BSP kernel: hdmirx@98034000 okay in the DTB, CONFIG_RTK_HDMIRX=y"
+    echo "  3) mainline kernel: lsmod | grep rtd129x_hdmirx (CONFIG_VIDEO_RTD129X_HDMIRX)"
     exit 1
 fi
 VIDEO_DEV="/dev/$VDEV_NAME"
 SYS_V4L="/sys/class/video4linux/$VDEV_NAME"
+# The BSP kernel reports the video state through an Android switch device;
+# the mainline driver has it as an attribute next to hdmirx_video_info.
 SWITCH=/sys/devices/virtual/switch/rx_video/state
+[ -r "$SWITCH" ] || SWITCH="$SYS_V4L/rx_video_state"
 
 INFO="$SYS_V4L/hdmirx_video_info"
 

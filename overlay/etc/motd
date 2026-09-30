@@ -1,6 +1,6 @@
   BPI-W2 PiKVM
   ────────────────────────────────────────────────
-  kernel  4.9.119-BPI-W2-Kernel (BSP + HDMI RX)
+  kernel  see uname -r: BSP 4.9 or mainline 6.18 (branch kernel-6.18)
   rootfs  Debian 13 (trixie) arm64
 
   Web UI    https://<this board's IP>/   admin / admin
