@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+config VIDEO_RTD129X_HDMIRX
+	tristate "Realtek RTD129x HDMI receiver"
+	depends on ARCH_REALTEK || COMPILE_TEST
+	depends on VIDEO_DEV && OF
+	select VIDEOBUF2_DMA_CONTIG
+	select CRYPTO_LIB_SHA1
+	help
+	  The HDMI input of the Realtek RTD1295/RTD1296, as a V4L2 capture
+	  device. This is Realtek's own BSP driver carried to mainline.

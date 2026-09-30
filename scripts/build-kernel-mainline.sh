@@ -51,6 +51,8 @@ cp /work/kernel/mainline/irq-rtd129x.c drivers/irqchip/irq-rtd129x.c
 cp /work/kernel/mainline/sdmmc-rtd129x.c drivers/mmc/host/sdmmc-rtd129x.c
 cp /work/kernel/mainline/r8169soc.c drivers/net/ethernet/realtek/r8169soc.c
 cp /work/kernel/mainline/clk-rtd129x-crt.c drivers/clk/clk-rtd129x-crt.c
+rm -rf drivers/media/platform/realtek-rtd129x-hdmirx
+cp -r /work/kernel/mainline/hdmirx drivers/media/platform/realtek-rtd129x-hdmirx
 cp "/work/kernel/mainline/realtek,rtd1295-irq-mux.yaml" \
    "Documentation/devicetree/bindings/interrupt-controller/realtek,rtd1295-irq-mux.yaml"
 

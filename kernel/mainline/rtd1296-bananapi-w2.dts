@@ -140,6 +140,15 @@
 	};
 };
 
+&iso {
+	/* The ISO clock gates (0x9800708c), same driver; specifier = bit. */
+	iso_clk: clock-controller@8c {
+		compatible = "realtek,rtd1295-iso-clk";
+		reg = <0x8c 0x4>;
+		#clock-cells = <1>;
+	};
+};
+
 /* CLK_EN_USB, CLK_EN1 bit 4 */
 #define RTD129X_CLK_EN_USB	4
 
@@ -248,6 +257,100 @@
 		rgmii-tx-delay = <0>;
 		rgmii-rx-delay = <0>;
 		ext-phy-id = <1>;
+	};
+
+	/*
+	 * HDMI input. kernel/mainline/hdmirx is Realtek's BSP driver with its
+	 * V4L2 side rewritten for mainline; see docs/09 §10.
+	 *
+	 * Registers, in the order the driver indexes them: CBUS, the HDMI RX
+	 * MAC/PHY, the RX wrapper, DDC, the MIPI PHY and the MIPI wrapper, from
+	 * the BSP's rtd-1296.dtsi. "iso" and "crt" are mapped without being
+	 * requested (both blocks belong to syscons in rtd129x.dtsi): the driver
+	 * drives HPD and the DDC pin mux in ISO, and powers the RX SRAM in CRT.
+	 */
+	hdmirx: hdmirx@34000 {
+		compatible = "realtek,rtd1295-hdmirx";
+		reg = <0x37000 0xe0>,
+		      <0x34000 0xf54>,
+		      <0x35f00 0x2c>,
+		      <0x37700 0x98>,
+		      <0x04000 0xf0>,
+		      <0x04100 0x104>,
+		      <0x07000 0x1000>,
+		      <0x00000 0x1000>;
+		reg-names = "cbus", "mac", "wrapper", "ddc", "mipi-phy", "mipi",
+			    "iso", "crt";
+		interrupts = <GIC_SPI 23 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&crt_clk 56>,		/* CLK_EN2 24: HDMIRX */
+			 <&crt_clk 27>,		/* CLK_EN1 27: MIPI */
+			 <&crt_clk 39>,		/* CLK_EN2 7: CBUS_TX */
+			 <&iso_clk 6>,		/* CBUS_OSC */
+			 <&iso_clk 5>,		/* CBUS_SYS */
+			 <&iso_clk 4>,		/* CBUSTX_SYS */
+			 <&iso_clk 3>;		/* CBUSRX_SYS */
+		clock-names = "hdmirx", "mipi", "cbus_tx", "cbus_osc",
+			      "cbus_sys", "cbustx_sys", "cbusrx_sys";
+		resets = <&reset4 RTD1295_RSTN_HDMIRX>,
+			 <&reset4 RTD1295_RSTN_HDMIRX_WRAP>,
+			 <&reset1 RTD1295_RSTN_MIPI>,
+			 <&reset2 RTD1295_RSTN_CBUS_TX>,
+			 <&iso_reset RTD1295_ISO_RSTN_CBUS>,
+			 <&iso_reset RTD1295_ISO_RSTN_CBUSTX>,
+			 <&iso_reset RTD1295_ISO_RSTN_CBUSRX>;
+		reset-names = "hdmirx", "hdmirx_wrap", "mipi", "cbus_tx",
+			      "cbus", "cbustx", "cbusrx";
+
+		/*
+		 * HPD: ISO GPIO 22, through an inverter. Source 5V is sensed
+		 * over CBUS, not on a GPIO -- the BSP's BPI board file put
+		 * 5V-detect on this same pin, which deadlocked HPD
+		 * (docs/04-hdmi-rx-bringup.md, blocker 1).
+		 */
+		realtek,hpd-iso-pin = <22>;
+
+		/*
+		 * EDID served to the source: Realtek's default table from the
+		 * BSP's rtd-1295-hdmirxEDID.dtsi (1080p60 preferred, the CEA
+		 * block with an HDMI VSDB), and its HDMI 2.0 variant.
+		 */
+		realtek,edid = [
+			00 ff ff ff ff ff ff 00 4a 8b 95 12 00 00 00 00
+			ff 1a 01 03 81 46 27 78 8a a5 8e a6 54 4a 9c 26
+			12 45 46 21 08 00 d1 c0 81 c0 01 01 01 01 01 01
+			01 01 01 01 01 01 02 3a 80 18 71 38 2d 40 58 2c
+			45 00 20 c2 31 00 00 1e 01 1d 00 72 51 d0 1e 20
+			6e 28 55 00 20 c2 31 00 00 1e 00 00 00 fd 00 32
+			4b 18 3c 0b 00 0a 20 20 20 20 20 20 00 00 00 fc
+			00 52 54 44 31 32 39 35 0a 20 20 20 20 20 01 ac
+			02 03 29 71 83 01 00 00 6e 03 0c 00 10 00 00 3c
+			20 00 80 01 02 03 04 49 90 1f 22 20 05 14 04 11
+			02 23 09 7f 07 e3 05 03 00 02 3a 80 18 71 38 2d
+			40 58 2c 45 00 20 c2 31 00 00 1e 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f
+		];
+		realtek,edid-hdmi20 = [
+			00 ff ff ff ff ff ff 00 4a 8b 95 12 00 00 00 00
+			ff 1a 01 03 81 46 27 78 8a a5 8e a6 54 4a 9c 26
+			12 45 46 21 08 00 d1 c0 81 c0 01 01 01 01 01 01
+			01 01 01 01 01 01 02 3a 80 18 71 38 2d 40 58 2c
+			45 00 20 c2 31 00 00 1e 01 1d 00 72 51 d0 1e 20
+			6e 28 55 00 20 c2 31 00 00 1e 00 00 00 fd 00 32
+			4b 18 3c 0b 00 0a 20 20 20 20 20 20 00 00 00 fc
+			00 52 54 44 31 32 39 35 0a 20 20 20 20 20 01 ac
+			02 03 3a 71 83 01 00 00 6e 03 0c 00 10 00 00 3c
+			20 00 80 01 02 03 04 67 d8 5d c4 01 77 80 00 4f
+			5d 5e 5f 60 61 62 90 1f 22 20 05 14 04 11 02 23
+			09 7f 07 e3 05 03 00 e2 0f 18 08 e8 00 30 f2 70
+			5a 80 b0 58 8a 00 20 c2 31 00 00 1e 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 8f
+		];
 	};
 
 	/*

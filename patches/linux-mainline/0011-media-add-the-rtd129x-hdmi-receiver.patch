@@ -1,0 +1,31 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] media: add the Realtek RTD129x HDMI receiver
+
+The driver itself is kept outside the kernel tree, in kernel/mainline/hdmirx,
+and copied in by scripts/build-kernel-mainline.sh; it carries its own
+Kconfig and Makefile. These two lines hook that directory in.
+
+diff --git a/drivers/media/platform/Kconfig b/drivers/media/platform/Kconfig
+index 9287faafd..0d9eb78a6 100644
+--- a/drivers/media/platform/Kconfig
++++ b/drivers/media/platform/Kconfig
+@@ -80,6 +80,7 @@ source "drivers/media/platform/nvidia/Kconfig"
+ source "drivers/media/platform/nxp/Kconfig"
+ source "drivers/media/platform/qcom/Kconfig"
+ source "drivers/media/platform/raspberrypi/Kconfig"
++source "drivers/media/platform/realtek-rtd129x-hdmirx/Kconfig"
+ source "drivers/media/platform/renesas/Kconfig"
+ source "drivers/media/platform/rockchip/Kconfig"
+ source "drivers/media/platform/samsung/Kconfig"
+diff --git a/drivers/media/platform/Makefile b/drivers/media/platform/Makefile
+index 6fd7db054..0e1a49a50 100644
+--- a/drivers/media/platform/Makefile
++++ b/drivers/media/platform/Makefile
+@@ -23,6 +23,7 @@ obj-y += nvidia/
+ obj-y += nxp/
+ obj-y += qcom/
+ obj-y += raspberrypi/
++obj-y += realtek-rtd129x-hdmirx/
+ obj-y += renesas/
+ obj-y += rockchip/
+ obj-y += samsung/
