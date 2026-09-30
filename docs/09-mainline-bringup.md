@@ -1304,9 +1304,20 @@ client -- a `/api/ws?stream=1` session -- makes kvmd start ustreamer, and
 the Pi, and the next snapshot shows Kodi's menu highlight moved from
 Add-ons to Pictures.
 
-HID reports `keyboard online: true, mouse online: false`. The mouse is off by
-configuration, as on the main branch: this dwc3 has too few endpoints for
-both.
+The absolute mouse works too. Walking it to the centre through
+`send_mouse_move` puts Kodi's pointer in the middle of the next snapshot.
+(`/api/hid` still says `mouse online: false`. That is kvmd's flag, not the
+device.)
+
+What the new kernel does and does not change about endpoints. 6.18's `f_hid`
+has `no_out_endpoint`, and kvmd-otg now sets it (`no_out_endpoint=1` on both
+functions), so the HID functions no longer take OUT endpoints. But this dwc3
+has two IN endpoints besides ep0 (`ep1in`, `ep2in` in debugfs, the same
+`GHWPARAMS3` as on 4.9), and the keyboard and mouse hold one each. Mass
+storage and the relative mouse (`mouse_alt`) each need an IN endpoint too,
+so they still do not fit alongside both. Virtual media still means giving
+up the mouse (the recipe is in `main.yaml`), unless keyboard and mouse are
+ever merged into one HID function sharing one IN endpoint.
 
 ## 11. Sources
 
