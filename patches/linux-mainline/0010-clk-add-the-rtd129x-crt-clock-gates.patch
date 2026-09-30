@@ -1,0 +1,39 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] clk: add the Realtek RTD129x CRT clock gates
+
+The driver itself is kept outside the kernel tree, in
+kernel/mainline/clk-rtd129x-crt.c, and copied in by
+scripts/build-kernel-mainline.sh -- same as the other drivers here.
+
+diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
+index 3a1611008..3276459fa 100644
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -405,6 +405,15 @@ config COMMON_CLK_PXA
+ 	help
+ 	  Support for the Marvell PXA SoC.
+ 
++config COMMON_CLK_RTD129X_CRT
++	bool "Realtek RTD129x CRT clock gates"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on OF
++	help
++	  The clock gates in the CRT block of the Realtek RTD1295/RTD1296.
++	  Without them the USB controllers stay gated unless the bootloader
++	  happened to open them.
++
+ config COMMON_CLK_RS9_PCIE
+ 	tristate "Clock driver for Renesas 9-series PCIe clock generators"
+ 	depends on I2C
+diff --git a/drivers/clk/Makefile b/drivers/clk/Makefile
+index 61ec08404..59ddbc0ae 100644
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -104,6 +104,7 @@ obj-$(CONFIG_CLK_TWL6040)		+= clk-twl6040.o
+ obj-$(CONFIG_CLK_TWL)			+= clk-twl.o
+ obj-$(CONFIG_ARCH_VT8500)		+= clk-vt8500.o
+ obj-$(CONFIG_COMMON_CLK_RS9_PCIE)	+= clk-renesas-pcie.o
++obj-$(CONFIG_COMMON_CLK_RTD129X_CRT)	+= clk-rtd129x-crt.o
+ obj-$(CONFIG_COMMON_CLK_SI521XX)	+= clk-si521xx.o
+ obj-$(CONFIG_COMMON_CLK_VC3)		+= clk-versaclock3.o
+ obj-$(CONFIG_COMMON_CLK_VC5)		+= clk-versaclock5.o

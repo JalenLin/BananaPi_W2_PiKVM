@@ -755,6 +755,41 @@ reader-swapping that every test cycle currently needs.
 
 ---
 
+### USB on an SD boot: the clock gate nobody opened (2026-10-01)
+
+Everything above ran by way of LK, and LK runs `usb start` before it jumps.
+Once the board booted from the SD slot through the BSP u-boot, which does
+not, both host controllers failed:
+
+```
+dwc3 98029000.usb: this is not a DesignWare USB3 DRD Core
+rtk-dwc3 98013c00.usb: failed to find dwc3 core
+```
+
+The registers showed why. `CLK_EN1` (0x9800000c) was `0x93fe8561`, so
+`CLK_EN_USB` (bit 4) was off. Every USB line in `SOFT_RESET1`/`SOFT_RESET2`
+was still asserted, so the core answered GSNPSID with garbage. Replaying
+u-boot's `rtk_usb_clock_init()` by hand with `devmem` and rebinding
+`rtk-dwc3` brought both xHCIs and the onboard hub up, so clock and resets
+were all that was missing. VBUS was already on.
+
+The fix is in the kernel, not the bootloader:
+
+- `kernel/mainline/clk-rtd129x-crt.c` (patch 0010) exposes CLK_EN1/CLK_EN2
+  as 64 plain gates, specifier = bit number, as the BSP numbers them.
+  Mainline had no clock driver for this SoC at all. Every gate is
+  `CLK_IGNORE_UNUSED`: UART, SD and ETN are left open by the bootloader and
+  their drivers do not claim a clock, so `clk_disable_unused()` would
+  otherwise shut them.
+- Each dwc3 core node gets `clocks = <&crt_clk 4>` (`bus_early`) and the
+  nine reset lines `usb start` releases. dwc3 takes those as a shared array
+  and releases them itself.
+
+Result on an SD boot: both xHCIs, `hub 1-1` (the onboard Terminus hub), and
+`crt_clk_en1_4` held by the controllers. The SD host and the network were
+unaffected. `CLK_EN2` is covered too because the HDMI receiver's gate
+(`CLK_EN_HDMIRX`) lives there.
+
 ## 8. M6, the SD slot
 
 ### The controller is the rtsx card reader core
