@@ -1054,6 +1054,31 @@ The kernel that performs a reboot is the one already running, not the one
 just pushed. So the first time this fix is installed over the network, one
 power cycle is still needed.
 
+### Recovery without a human
+
+Once kernels go over the network, whoever is testing may not be near the
+board. A bad kernel should cost a reboot, not a trip to the card reader.
+Three layers, each tested on 2026-10-01:
+
+| Failure | What recovers it | Tested by |
+|---------|------------------|-----------|
+| Kernel panics, oopses or soft-locks | `PANIC_TIMEOUT=10`, `PANIC_ON_OOPS`, `BOOTPARAM_SOFTLOCKUP_PANIC` in `bpiw2.config`; the reset goes through patch 0009 | `echo c > /proc/sysrq-trigger`: `Kernel panic` -> `Rebooting in 10 seconds..` -> u-boot -> back on ssh |
+| Userspace hangs | systemd feeds `/dev/watchdog0` (`overlay/etc/systemd/system.conf.d/10-watchdog.conf`, 30 s) | boot log: `Watchdog running with a hardware timeout of 30s` |
+| The new kernel never boots | `scripts/boot-prev-kernel.sh` stops u-boot over serial and boots `uImage.prev`/`bpi-w2.dtb.prev`; `--restore` then makes them the default again | reboot, run it: `Loading ".../uImage.prev"`, and `uname -v` showed the previous build |
+
+Patch 0009 gained a second hunk for the watchdog layer. `rtd119x_wdt`
+implements ping and set_timeout but advertised neither in `options`, so
+the watchdog core refused `WDIOC_KEEPALIVE`, and systemd reported
+`Failed to ping hardware watchdog ... Operation not supported`.
+
+`boot-prev-kernel.sh` relies on u-boot reading `uEnv.txt`, after which
+`boot_from_sd()` loads whatever `sd_vmlinux`/`sd_boot_dtb` name. The script
+replays u-boot's own `boot_normal` by hand and overrides those two after
+the import.
+
+What is left is a hang so early that neither a panic nor systemd is
+running. After the first second of boot, that means a power cycle.
+
 ### How to test it
 
 ```sh

@@ -1,7 +1,8 @@
 From: BPI-W2 PiKVM <jalen.lin@gmail.com>
-Subject: [PATCH] watchdog: rtd119x: add a restart handler
+Subject: [PATCH] watchdog: rtd119x: add a restart handler, advertise ping and timeout
 
-Nothing else can reset the RTD129x, so without one every reboot ends in
+Nothing else can reset the RTD129x, so without a restart handler every
+reboot ends in
 
   reboot: Restarting system
   Reboot failed -- System halted
@@ -10,8 +11,14 @@ and the board needs a power cycle -- which defeats installing kernels over
 the network. The sequence is the one in Realtek's BSP
 (drivers/soc/realtek/rtd129x/rtd129x_restart.c).
 
+The driver also implements ping and set_timeout but advertised neither, so
+the watchdog core refused WDIOC_KEEPALIVE and WDIOC_SETTIMEOUT and systemd
+could not use it:
+
+  systemd-shutdown[1]: Failed to ping hardware watchdog, ignoring: Operation not supported
+
 diff --git a/drivers/watchdog/rtd119x_wdt.c b/drivers/watchdog/rtd119x_wdt.c
-index 984905695..75a2c7584 100644
+index 984905695..4b8ccae45 100644
 --- a/drivers/watchdog/rtd119x_wdt.c
 +++ b/drivers/watchdog/rtd119x_wdt.c
 @@ -8,6 +8,7 @@
@@ -30,7 +37,7 @@ index 984905695..75a2c7584 100644
  
  #define RTD119X_TCWCR_WDEN_DISABLED		0xa5
  #define RTD119X_TCWCR_WDEN_ENABLED		0xff
-@@ -76,12 +78,34 @@ static int rtd119x_wdt_set_timeout(struct watchdog_device *wdev, unsigned int va
+@@ -76,17 +78,39 @@ static int rtd119x_wdt_set_timeout(struct watchdog_device *wdev, unsigned int va
  	return 0;
  }
  
@@ -65,6 +72,12 @@ index 984905695..75a2c7584 100644
  };
  
  static const struct watchdog_info rtd119x_wdt_info = {
+ 	.identity = "rtd119x-wdt",
+-	.options = 0,
++	.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE,
+ };
+ 
+ static const struct of_device_id rtd119x_wdt_dt_ids[] = {
 @@ -119,6 +143,7 @@ static int rtd119x_wdt_probe(struct platform_device *pdev)
  	data->wdt_dev.parent = dev;
  
