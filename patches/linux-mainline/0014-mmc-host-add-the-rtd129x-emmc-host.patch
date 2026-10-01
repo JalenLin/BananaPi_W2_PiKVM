@@ -1,0 +1,41 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] mmc: host: add the Realtek RTD129x eMMC host
+
+The RTD1295/RTD1296 eMMC controller is a DesignWare MSHC with a Realtek
+wrapper, driven the way Realtek's BSP does (see the driver's comment for
+why not dw_mmc). The driver, emmc-rtd129x.c, is kept outside the kernel
+tree in kernel/mainline and copied in by scripts/build-kernel-mainline.sh;
+these lines hook it in.
+
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -76,6 +76,17 @@
+ 
+ 	  Without it there is no SD card on these SoCs and the rootfs has to
+ 	  come from USB.
++
++config MMC_RTD129X_EMMC
++	tristate "Realtek RTD129x eMMC host"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on HAS_DMA
++	select MFD_SYSCON
++	help
++	  Support for the eMMC host on the Realtek RTD1295/RTD1296, a
++	  Synopsys DesignWare MSHC behind a Realtek wrapper that dw_mmc
++	  cannot drive: its DMA engine does not hand descriptors back and
++	  its busy status does not clear.
+ 
+ config MMC_SDHCI
+ 	tristate "Secure Digital Host Controller Interface support"
+diff --git a/drivers/mmc/host/Makefile b/drivers/mmc/host/Makefile
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -12,6 +12,7 @@
+ obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
+ obj-$(CONFIG_MMC_SDHCI)		+= sdhci.o
+ obj-$(CONFIG_MMC_SDMMC_RTD129X)	+= sdmmc-rtd129x.o
++obj-$(CONFIG_MMC_RTD129X_EMMC)	+= emmc-rtd129x.o
+ obj-$(CONFIG_MMC_SDHCI_UHS2)	+= sdhci-uhs2.o
+ obj-$(CONFIG_MMC_SDHCI_PCI)	+= sdhci-pci.o
+ sdhci-pci-y			+= sdhci-pci-core.o sdhci-pci-o2micro.o sdhci-pci-arasan.o \

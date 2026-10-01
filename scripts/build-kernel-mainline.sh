@@ -49,7 +49,7 @@ cp /work/kernel/mainline/rtd1296-bananapi-w2.dts \
    arch/arm64/boot/dts/realtek/rtd1296-bananapi-w2.dts
 cp /work/kernel/mainline/irq-rtd129x.c drivers/irqchip/irq-rtd129x.c
 cp /work/kernel/mainline/sdmmc-rtd129x.c drivers/mmc/host/sdmmc-rtd129x.c
-cp /work/kernel/mainline/dw_mmc-rtd129x.c drivers/mmc/host/dw_mmc-rtd129x.c
+cp /work/kernel/mainline/emmc-rtd129x.c drivers/mmc/host/emmc-rtd129x.c
 cp /work/kernel/mainline/r8169soc.c drivers/net/ethernet/realtek/r8169soc.c
 cp /work/kernel/mainline/clk-rtd129x-crt.c drivers/clk/clk-rtd129x-crt.c
 rm -rf drivers/media/platform/realtek-rtd129x-hdmirx

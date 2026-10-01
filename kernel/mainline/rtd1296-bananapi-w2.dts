@@ -260,29 +260,21 @@
 
 	/*
 	 * The 8 GB eMMC: a DesignWare MSHC with a Realtek wrapper at +0x400
-	 * (kernel/mainline/dw_mmc-rtd129x.c). The boot loader has set up its
-	 * pins, pads, 1.8 V and PLL. clock-frequency is the most the EMMC PLL
-	 * runs at (HS200); see the driver for why an upper bound is right.
-	 * fifo-depth from FIFOTH's reset value, 0x007f007f, that the BSP
-	 * notes before overwriting it. No resets: RSTN_EMMC would also reset
+	 * (kernel/mainline/emmc-rtd129x.c). The boot loader has set up its
+	 * pins, pads and 1.8 V; the driver sets the EMMC PLL in CRT, and
+	 * syncs SB2 before each DMA. No resets: RSTN_EMMC would also reset
 	 * the wrapper's clock generator that the boot loader set.
-	 *
-	 * Disabled: work in progress. Commands work and the card is found
-	 * (7.28 GiB), but data transfers do not complete -- this IDMAC does
-	 * not seem to report completion in IDSTS or hand descriptors back
-	 * (docs/10 §5). Enabled, the driver would retry until it times out.
 	 */
 	emmc: mmc@12000 {
-		compatible = "realtek,rtd1295-dw-mshc";
-		status = "disabled";
+		compatible = "realtek,rtd1295-emmc";
 		reg = <0x12000 0x600>;
 		interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&crt_clk 24>, <&crt_clk 28>;	/* CLK_EN1: EMMC, EMMC_IP */
 		clock-names = "biu", "ip";
-		clock-frequency = <200000000>;
-		fifo-depth = <128>;
+		realtek,crt = <&crt>;	/* the EMMC PLL */
+		realtek,sb2 = <&sb2>;	/* to sync posted writes before DMA */
 		bus-width = <8>;
-		max-frequency = <25000000>;	/* 50 MHz failed the bus width switch */
+		max-frequency = <52000000>;
 		cap-mmc-highspeed;
 		non-removable;
 		no-sd;
