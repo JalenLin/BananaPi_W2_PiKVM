@@ -60,7 +60,10 @@ On this branch (`kernel-6.18`), the mainline kernel has its own line:
 |---------|--------------|
 | `make builder-mainline sources-mainline kernel-mainline` | Build the 6.18 kernel |
 | `make rootfs-arch` | Build the Arch Linux ARM rootfs with PiKVM's packages (ustreamer and kvmd built from our patched sources, Janus from PiKVM's repository) |
-| `make image-mainline` | Assemble `build/bpiw2-pikvm-mainline.img` from those two |
+| `make image-mainline` | Assemble `build/bpiw2-pikvm-mainline.img` from those two (u-boot comes from `make uboot`) |
+
+What that image does, and the details of building it, are in
+[`docs/10-mainline-summary.md`](docs/10-mainline-summary.md).
 
 The BSP kernel stays on Debian: Arch's systemd cannot run on 4.9.
 
@@ -159,7 +162,8 @@ were worked out.
 | [`docs/03-image-and-boot.md`](docs/03-image-and-boot.md) | Image layout, boot chain, u-boot's constraints | Current state |
 | [`docs/02-decisions.md`](docs/02-decisions.md) | Kernel / rootfs / build environment choices, with later corrections | Decision record |
 | [`docs/01-research-findings.md`](docs/01-research-findings.md) | Fact-finding and evidence gathered before any code was written | **Snapshot as of 2026-09-04** |
-| [`docs/09-mainline-bringup.md`](docs/09-mainline-bringup.md) | **The `kernel-6.18` branch**: how the second kernel tree is built, what the boot chain does, milestone status | Current state (other branch) |
+| [`docs/10-mainline-summary.md`](docs/10-mainline-summary.md) | **The `kernel-6.18` branch in one page**: what works (H.264, WebRTC, HDMI audio, ...), how to build and flash it, what the branch consists of | Current state (this branch) |
+| [`docs/09-mainline-bringup.md`](docs/09-mainline-bringup.md) | **The `kernel-6.18` branch**: how the second kernel tree is built, what the boot chain does, milestone status, every finding | Current state + process (this branch) |
 | [`docs/08-kernel-uplift.md`](docs/08-kernel-uplift.md) | Not chasing the latest: which LTS is worth targeting, and an existing port to crib from | Analysis + plan |
 | [`docs/07-mainline.md`](docs/07-mainline.md) | What blocks a move to current mainline | Analysis |
 | [`docs/refs/`](docs/refs/) | The official BPI-W2 schematic and where it came from | Reference |
@@ -217,7 +221,7 @@ build/          build outputs
 |-----|------------|
 | `main` | The BSP 4.9.119 line. This is the working deliverable and what the documentation describes |
 | `v1.0-bsp4.9` (tag) | An immutable snapshot of the verified BSP 4.9 state |
-| `kernel-6.18` | Porting the board to Linux 6.18 LTS. Carries a second kernel tree next to the BSP; see `docs/09-mainline-bringup.md` for its status |
+| `kernel-6.18` | Linux 6.18 LTS with Arch Linux ARM and PiKVM's packages: everything `main` does, plus H.264, WebRTC, HDMI audio and the web terminal. Builds both lines; see `docs/10-mainline-summary.md` |
 
 The kernel lines are kept apart deliberately. `main` stays functional while
 `kernel-6.18` is worked on, and until that work passes M5 (HDMI capture)

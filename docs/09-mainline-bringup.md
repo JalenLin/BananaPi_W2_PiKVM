@@ -1703,11 +1703,20 @@ plugin leaves audio out.
   a packet type, clear `HDMI_GPVS` bit 6, and see whether it comes back:
   0x84 audio infoframe, 0x01 ACR, 0x02 audio sample.
 
+### The serial console noise
+
 The firmware prints `[AO][_AO_if_video_HDMI_mode]HDMI not enabled` on the
 serial console about every 3 s. That is the board's own HDMI output, for
-which there is no driver; the BSP image printed it too. Its print routine
-can log to a memory ring instead of the UART (the pointer at
-`0x8fc5db1c`), but nothing sets that up yet.
+which there is no driver; the BSP image printed it too. The function that
+prints it (`0x8f9e4814`) does so only when bit 0 of `*ptrDebugFlag`
+(pointer at `0x8fc5daa4`) is set, and the firmware sets that flag to 1 when
+it starts its second stage. There is no RPC to change it, so `rtd129x-acpu`
+clears the bit in the firmware's data, after the firmware's first memory
+request (by then the flag is set up). It does so only if the message
+string sits where this firmware build has it, and not with `fw_debug=1`.
+
+Clearing the bit by hand stopped the message (none in 45 s), and capture
+went on working.
 
 ## 14. Sources
 
