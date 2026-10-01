@@ -296,8 +296,9 @@
 		reg = <0x1a104 0xc>;
 		interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
 		memory-region = <&rpc_comm>, <&rpc_ringbuf>,
-				<&acpu_audio_heap>, <&ion_media1>;
-		memory-region-names = "comm", "ring", "audio", "media";
+				<&acpu_audio_heap>, <&ion_media1>, <&acpu_fw>;
+		memory-region-names = "comm", "ring", "audio", "media",
+				      "firmware";
 	};
 
 	/*

@@ -24,6 +24,13 @@
  * The two CPUs interrupt each other through SB2's CPU_INT register, and
  * mark an interrupt as an RPC one with a bit in the IPC block's
  * vo_int_sync word; the same interrupt also carries display sync events.
+ *
+ * The firmware prints to the UART the system console is on, and with its
+ * debug flag set (as it starts up) it prints "[AO][_AO_if_video_HDMI_mode]
+ * HDMI not enabled" every three seconds, about the board's HDMI output.
+ * There is no call to change the flag, so once the firmware has set it,
+ * it is cleared in the firmware's data, for the one firmware build whose
+ * layout is known.
  */
 #include <linux/auxiliary_bus.h>
 #include <linux/delay.h>
@@ -95,6 +102,19 @@ struct rpc_hdr {
 
 #define CALL_TIMEOUT		msecs_to_jiffies(1000)
 
+/*
+ * The debug flag, in bluecore.audio "Audio Version = 166265 (Kylin)",
+ * compiled Sep 21 2017: _AO_if_video_HDMI_mode() prints when bit 0 of
+ * *ptrDebugFlag is set. Offsets are from the load address, 0x0f900000.
+ */
+#define FW_PTR_DEBUG_FLAG	0x0035daa4
+#define FW_HDMI_MSG		0x003bd230
+static const char fw_hdmi_msg[] = "[AO][_AO_if_video_HDMI_mode]HDMI not enabled";
+
+static bool fw_debug;
+module_param(fw_debug, bool, 0444);
+MODULE_PARM_DESC(fw_debug, "Leave the audio firmware's debug output on");
+
 struct remote_alloc {
 	struct list_head list;
 	phys_addr_t phys;
@@ -111,6 +131,10 @@ struct rtd_acpu {
 	struct gen_pool *audio;		/* buffers we share with it */
 	struct gen_pool *media;		/* what it asks us for */
 	struct list_head remote;
+
+	void __iomem *fw;		/* the firmware image and data */
+	resource_size_t fw_size;
+	bool quiet;
 
 	spinlock_t sa_lock;		/* the SA rings and the interrupt */
 	struct work_struct work;
@@ -287,6 +311,31 @@ static void acpu_remote_free(struct rtd_acpu *acpu, u32 addr)
 	dev_warn(acpu->dev, "remote free of unknown %#x\n", addr);
 }
 
+/* Turn the firmware's debug output off; see the top of the file */
+static void acpu_quiet(struct rtd_acpu *acpu)
+{
+	char msg[sizeof(fw_hdmi_msg)];
+	u32 ptr, off;
+
+	if (acpu->quiet || fw_debug)
+		return;
+	acpu->quiet = true;
+
+	memcpy_fromio(msg, acpu->fw + FW_HDMI_MSG, sizeof(msg));
+	if (memcmp(msg, fw_hdmi_msg, sizeof(msg))) {
+		dev_info(acpu->dev, "unknown firmware build, debug output left on\n");
+		return;
+	}
+	ptr = be32_to_cpu(readl(acpu->fw + FW_PTR_DEBUG_FLAG));
+	off = (ptr & 0x1fffffff) - 0x0f900000;
+	if (!ptr || off >= acpu->fw_size - 4) {
+		dev_info(acpu->dev, "debug flag not set up (%#x)\n", ptr);
+		return;
+	}
+	writel(readl(acpu->fw + off) & ~cpu_to_be32(BIT(0)), acpu->fw + off);
+	dev_dbg(acpu->dev, "firmware debug output off\n");
+}
+
 static void acpu_skip(struct rtd_acpu *acpu, u32 rec, u32 len)
 {
 	u8 buf[64];
@@ -340,6 +389,8 @@ static void acpu_do_intr(struct rtd_acpu *acpu)
 		}
 		hdr.context &= ~cpu_to_be32(3);
 		acpu_reply(acpu, INTR_REC(0), &hdr, value);
+		/* the firmware has set its debug flag by its first request */
+		acpu_quiet(acpu);
 	}
 }
 
@@ -535,7 +586,7 @@ static int acpu_add_pcm(struct rtd_acpu *acpu)
 static int acpu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct resource comm, ring, audio, media;
+	struct resource comm, ring, audio, media, fw;
 	struct rtd_acpu *acpu;
 	void *audio_virt;
 	int irq, ret;
@@ -559,7 +610,8 @@ static int acpu_probe(struct platform_device *pdev)
 	ret = acpu_region(acpu, "comm", &comm) ?:
 	      acpu_region(acpu, "ring", &ring) ?:
 	      acpu_region(acpu, "audio", &audio) ?:
-	      acpu_region(acpu, "media", &media);
+	      acpu_region(acpu, "media", &media) ?:
+	      acpu_region(acpu, "firmware", &fw);
 	if (ret)
 		return ret;
 	acpu->comm = devm_ioremap(dev, comm.start, resource_size(&comm));
@@ -569,6 +621,13 @@ static int acpu_probe(struct platform_device *pdev)
 	if (!acpu->comm || !acpu->ring || IS_ERR(audio_virt))
 		return -ENOMEM;
 	acpu->ring_acpu = rtd_acpu_addr(ring.start);
+	acpu->fw_size = resource_size(&fw);
+	acpu->fw = devm_ioremap(dev, fw.start, acpu->fw_size);
+	if (!acpu->fw)
+		return -ENOMEM;
+	/* the firmware is linked to run here; its pointers say so */
+	if (fw.start != 0x0f900000)
+		return dev_err_probe(dev, -EINVAL, "firmware not at 0x0f900000\n");
 
 	acpu->audio = devm_gen_pool_create(dev, 6, -1, "acpu-audio");
 	acpu->media = devm_gen_pool_create(dev, PAGE_SHIFT, -1, "acpu-media");
@@ -594,6 +653,7 @@ static int acpu_probe(struct platform_device *pdev)
 	 */
 	if (readl(acpu->sb2 + RPC_INT_EN) & RPC_INT_SA) {
 		dev_warn(dev, "audio firmware already running\n");
+		acpu_quiet(acpu);
 	} else if (be32_to_cpu(readl(acpu->comm)) != 0x16803001) {
 		/* u-boot's "go a" writes this magic for the firmware */
 		return dev_err_probe(dev, -ENODEV, "audio firmware not started\n");
