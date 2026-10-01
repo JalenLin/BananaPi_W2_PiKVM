@@ -158,7 +158,8 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M4** | kvmd + ustreamer on 6.18 | **done** 2026-10-01: kvmd starts ustreamer on demand, keyboard input reaches the target and shows up in the capture -- see §10 |
 | **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
-| **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11. No audio |
+| **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11 |
+| **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus -- see §13. Not yet heard with a source actually playing |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1543,8 +1544,7 @@ mid-GOP. A browser sends a PLI for a new stream, and kvmd's UI also sends
   30-36 fps with the last lines intact. A client that reconnects within
   ustreamer's 10 s gets video after one `key_required`, as the UI would send.
 
-Still to do: audio. On the BSP the ACPU firmware captures the HDMI input's
-audio over Realtek's RPC; mainline has no driver for that.
+Audio: see §13.
 
 ## 12. The rootfs: Arch Linux ARM with PiKVM's packages
 
@@ -1591,7 +1591,116 @@ either works.
 Upstream's ustreamer PKGBUILD does not list `speexdsp`, which the Janus
 plugin needs; the script installs it explicitly.
 
-## 13. Sources
+## 13. HDMI audio: the audio CPU
+
+The HDMI receiver hands the audio it decodes to the audio input (AI) block,
+and AI belongs to the audio CPU (ACPU), a big-endian MIPS-compatible core
+running Realtek's firmware, `bluecore.audio`. The BSP u-boot loads it and
+starts the ACPU on it ("go a") before every kernel, ours included. The BSP
+kernel talks to it over Realtek's RPC (`drivers/soc/realtek/common/rpc`)
+and its ALSA driver (`sound/arm/snd-realtek*`) asks it for the capture.
+`kernel/mainline/acpu` does the same for mainline, in two modules:
+
+- `rtd129x-acpu`: the RPC. It cannot be unloaded: the firmware keeps the
+  memory it was given.
+- `snd-rtd129x-hdmirx`: ALSA card `hdmirx`, one capture device, S16_LE
+  stereo at 44.1 or 48 kHz. It attaches to the first over the auxiliary bus.
+
+### How the firmware starts, and what it waits for
+
+The firmware starts in two stages. The first runs while u-boot is still
+loading the kernel: it brings up the audio hardware and prints the
+`[AO]aio_...` lines. Then it waits, sleeping 10 ticks at a time, for
+`audio_rpc_flag` in the IPC block (`0x1f0d0`) to become non-zero. That is
+the system CPU saying the RPC rings are ready. This was found by disassembly
+(`mips-linux-gnu-objdump -EB`, load address `0x8f900000`), not documented
+anywhere.
+
+The second stage opens the rings (`[ROS: openRPC()`), then asks the system
+CPU for memory over that same RPC (`gloabl malloc`, `do Remote Malloc`) and
+waits for the answer before it creates its agents. The BSP answers out of
+its ION media heap. Here the reply comes from media heap 1 (`0x03200000`),
+already reserved. It gets the same addresses the BSP gave it, starting at
+`0x83200000`, which is KSEG0 for `0x03200000`.
+
+### The RPC
+
+| Part | Where |
+|---|---|
+| Rings and their records | `0x01ffe000`, 16 KiB, a layout the firmware hardcodes: poll, intr and kern rings of 512 bytes, records of five words (buffer, start, end, in, out) in the CPU's byte order, holding ACPU (KSEG1) addresses |
+| IPC block | `0x1f0c4`, big-endian: `audio_rpc_flag` at +0x0c, `vo_int_sync` at +0x40 |
+| Interrupts | SB2 `CPU_INT` `0x9801a104` (bit 1 system to audio, bit 3 back, bit 0 "write 1"), SPI 33. `vo_int_sync` bit 9 marks one as RPC; the same line carries display sync |
+| Kernel calls | kern ring 0, replies on kern ring 1: `{98, 98, 0, task, 0, 0, 12, 0}` then command, argument address, result address |
+| Firmware requests | intr ring 1, replies on intr ring 0: program 98 is memory (1 alloc, 2 free, 3 secure alloc), the reply `phys + 0x80000000` |
+
+Messages and everything the firmware reads are big-endian. Argument
+structures are passed as `phys | 0xa0000000`.
+
+### Two things mainline broke
+
+Both left the firmware stuck in its first stage. It looked alive, with its
+memory changing, but it never answered.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Its task delays (TCB +32, list at `0x8fc63940`) never counted down: the OS tick had stopped, so the 10-tick sleep never returned | `irq-rtd129x.c` cleared every bit of the ISO and MISC status registers at init. The enable registers are the system CPU's own, but the status registers are shared with the ACPU | Leave the status registers alone, as the BSP's driver does |
+| Its BSS, heap and stacks were overwritten | The image is 3.8 MiB at `0x0f900000` and its data runs on to `ACPU_FIREWARE_SIZE`, 5 MiB; the DTS reserved 4 | Reserve 5 MiB, and the MIPS reset vector page at `0x1fc00000` |
+
+How it was narrowed down: reading the firmware's TCBs through `/dev/mem`;
+setting the flag from the u-boot console instead (with the dcache off,
+since u-boot's `mw` otherwise sits in the cache until `booti` flushes it),
+where the firmware went straight on; and booting the BSP kernel from an
+initramfs to see the same firmware print `openRPC` with a working kernel.
+`rpc@1f000` and `rpc@1ffe000` are now `no-map`, so the driver maps them
+uncached, as the firmware sees them.
+
+### Capture
+
+This is the BSP's `snd_card_capture_prepare_LPCM()` sequence:
+
+1. `CHECK_READY`.
+2. `CREATE_AGENT(AUDIO_IN)`.
+3. Two per-channel PCM rings and one LPCM ring, with `INIT_RINGBUF`.
+4. `PRIVATEINFO(AI_CONNECT_ALSA, 16-bit LE)`.
+5. `ADC0_CONFIG` with the rate.
+6. `PAUSE`, then `RUN`.
+
+The AI agent's default source is the HDMI receiver. The firmware resamples
+to the rate asked for (`AI SRC 44100 => 48000`), so the stream rate stays
+fixed.
+
+An hrtimer copies whole periods from the LPCM ring into the ALSA buffer.
+When the source sends no audio, the firmware writes nothing. The driver
+then fills in silence in real time, so Janus sees a quiet input instead of
+a stalled one.
+
+On the HDMI side the receiver's audio state machine (`Hdmi_AudioModeDetect`,
+already in the hdmirx port) sets up the audio PLL once ACR packets arrive.
+
+### kvmd
+
+`janus.plugin.ustreamer.jcfg` has `acap { device = "hw:hdmirx,0";
+sampling_rate = 48000 }`. A TC358743 is not needed to learn the rate, since
+the firmware resamples. With the BSP kernel there is no such card, and the
+plugin leaves audio out.
+
+### Verified on hardware, 2026-10-01
+
+- From a cold boot: the firmware's second stage runs completely (global AO,
+  PP, connections) with the memory this driver hands it.
+- `arecord -D hw:hdmirx` delivers 48 kHz stereo in real time.
+- A headless WebRTC client gets `features.audio = true`, an Opus track, and
+  480 samples per 10 ms. That is silence for now: the source (Kodi on a
+  Pi) sends no audio packets, and the receiver logs `Audio Sample miss`.
+- Not yet checked: real audio from a source that plays some.
+
+The firmware prints `[AO][_AO_if_video_HDMI_mode]HDMI not enabled` on the
+serial console about every 3 s. That is the board's own HDMI output, for
+which there is no driver; the BSP image printed it too. Its print routine
+can log to a memory ring instead of the UART (the pointer at
+`0x8fc5db1c`), but nothing sets that up yet.
+
+## 14. Sources
 
 | Source | Used for |
 |--------|----------|

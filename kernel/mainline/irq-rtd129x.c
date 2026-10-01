@@ -271,9 +271,13 @@ static int __init rtd129x_irq_mux_init(struct device_node *np,
 	/*
 	 * The boot firmware leaves sources enabled -- notably UART0, which it
 	 * has been using as its console. Start from a known state.
+	 *
+	 * The enable register is this CPU's alone, but the status register is
+	 * shared with the audio CPU, so leave its bits alone: clearing them
+	 * all here once stopped the audio firmware's OS tick for good, and it
+	 * never answered an RPC after that.
 	 */
 	writel_relaxed(0, mux->enable);
-	writel_relaxed(GENMASK(31, 0), mux->status);
 
 	irq_set_chained_handler_and_data(parent_irq, rtd129x_irq_mux_handle,
 					 mux);

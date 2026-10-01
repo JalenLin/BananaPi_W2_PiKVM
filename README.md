@@ -206,8 +206,10 @@ build/          build outputs
 - **There is no RTC battery.** Every boot starts in 2014 until
   `systemd-timesyncd` syncs. Until then apt fails because signatures are
   "not valid yet".
-- The serial console gets flooded by the Realtek audio driver's
-  `[AO][_AO_if_video_HDMI_mode]HDMI not enabled`. `dmesg -n 1` quiets it.
+- The serial console shows `[AO][_AO_if_video_HDMI_mode]HDMI not enabled`
+  every few seconds. It is the audio CPU's firmware writing to the shared
+  UART directly, not the kernel, so `dmesg -n` does not quiet it. The
+  mainline image starts that firmware too, for the HDMI audio.
 
 ## Branches
 

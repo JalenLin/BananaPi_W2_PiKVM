@@ -44,13 +44,20 @@
 
 		/*
 		 * The BSP u-boot loads bluecore.audio to CONFIG_FW_LOADADDR
-		 * (0x0f900000, 4 MiB reserved) before handing over, and the
-		 * audio CPU may already be fetching from it. Nothing on this
-		 * kernel line uses the ACPU, but letting Linux allocate over a
-		 * running core is not worth the debugging.
+		 * (0x0f900000) and starts the audio CPU on it ("go a"). The
+		 * image is 3.8 MiB; its BSS, heap and stacks follow it, up to
+		 * ACPU_FIREWARE_SIZE in the BSP's memory.h, 5 MiB. With only
+		 * 4 MiB reserved Linux took the last one, and the ACPU stopped
+		 * answering RPCs.
 		 */
 		acpu_fw: audio-firmware@f900000 {
-			reg = <0x0f900000 0x00400000>;
+			reg = <0x0f900000 0x00500000>;
+			no-map;
+		};
+
+		/* ACPU_BOOTCODE_PHYS: the MIPS reset vector, 0xbfc00000 */
+		acpu_bootcode: acpu-bootcode@1fc00000 {
+			reg = <0x1fc00000 0x1000>;
 			no-map;
 		};
 
@@ -122,6 +129,19 @@
 			no-map;
 		};
 	};
+};
+
+/*
+ * Shared with the audio CPU, which reads and writes them uncached: the IPC
+ * block (rpc_comm) and the RPC rings. Out of the linear map, so that they
+ * can be mapped uncached on this side too.
+ */
+&rpc_comm {
+	no-map;
+};
+
+&rpc_ringbuf {
+	no-map;
 };
 
 &uart0 {
@@ -262,6 +282,22 @@
 		rgmii-tx-delay = <0>;
 		rgmii-rx-delay = <0>;
 		ext-phy-id = <1>;
+	};
+
+	/*
+	 * The audio CPU's RPC (rtk_rpc in the BSP). The registers are SB2's
+	 * CPU_INT/CPU_INT_EN, inside the sb2 syscon, so the driver maps them
+	 * without claiming them. The audio firmware's memory requests are
+	 * served from media heap 1, as the BSP's ION does; buffers shared
+	 * with it come from the audio heap.
+	 */
+	acpu: audio-cpu@1a104 {
+		compatible = "realtek,rtd1295-acpu";
+		reg = <0x1a104 0xc>;
+		interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
+		memory-region = <&rpc_comm>, <&rpc_ringbuf>,
+				<&acpu_audio_heap>, <&ion_media1>;
+		memory-region-names = "comm", "ring", "audio", "media";
 	};
 
 	/*

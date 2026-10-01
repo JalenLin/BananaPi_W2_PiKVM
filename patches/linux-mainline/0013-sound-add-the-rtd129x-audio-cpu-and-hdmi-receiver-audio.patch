@@ -1,0 +1,32 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] sound: add the RTD129x audio CPU and the HDMI receiver audio
+
+The drivers are kept outside the kernel tree, in kernel/mainline/acpu, and
+copied in by scripts/build-kernel-mainline.sh; they carry their own Kconfig
+and Makefile. These lines hook that directory in.
+
+diff --git a/sound/Kconfig b/sound/Kconfig
+index 8b4020539..ddcceaf65 100644
+--- a/sound/Kconfig
++++ b/sound/Kconfig
+@@ -67,6 +67,8 @@ source "sound/aoa/Kconfig"
+ 
+ source "sound/arm/Kconfig"
+ 
++source "sound/realtek-rtd129x-acpu/Kconfig"
++
+ source "sound/atmel/Kconfig"
+ 
+ source "sound/spi/Kconfig"
+diff --git a/sound/Makefile b/sound/Makefile
+index 5942311a4..fe9db38ca 100644
+--- a/sound/Makefile
++++ b/sound/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_SND) += core/ i2c/ drivers/ isa/ pci/ ppc/ arm/ sh/ synth/ usb/ \
+ 	firewire/ sparc/ spi/ parisc/ pcmcia/ mips/ soc/ atmel/ hda/ x86/ xen/ \
+ 	virtio/
+ obj-$(CONFIG_SND_AOA) += aoa/
++obj-y += realtek-rtd129x-acpu/
+ 
+ # This one must be compilable even if sound is configured out
+ obj-$(CONFIG_AC97_BUS) += ac97_bus.o

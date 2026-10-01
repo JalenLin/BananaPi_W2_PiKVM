@@ -1,8 +1,17 @@
-# ustreamer's Janus plugin: WebRTC from ustreamer's H.264 sink.
+# ustreamer's Janus plugin: WebRTC from ustreamer's H.264 sink, and the HDMI
+# input's audio.
 #
-# Replaces PiKVM V4's version, which also captures audio from a TC358743
-# (acap), plays audio to the target (aplay) and feeds a webcam (vplay). This
-# board has no ALSA device for the HDMI input's audio yet, so video only.
+# Replaces PiKVM V4's version, which captures audio from a TC358743 and asks
+# that chip for the sampling rate. Here the audio CPU delivers 48 kHz
+# whatever the source sends (it resamples), so the rate is fixed. Playing
+# audio to the target (aplay) and the webcam (vplay) are not wired.
+#
+# The capture device comes with the mainline kernel only (snd-rtd129x-hdmirx);
+# with the BSP one the plugin finds no card and leaves audio out.
 video: {
 	sink = "kvmd::ustreamer::h264"
+}
+acap: {
+	device = "hw:hdmirx,0"
+	sampling_rate = 48000
 }
