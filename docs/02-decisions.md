@@ -31,6 +31,10 @@ and map it to `/dev/kvmd-video`.
 
 ## D3 — Rootfs: Debian 13 (trixie) arm64
 
+> **Done on the `kernel-6.18` branch, 2026-10-01:** the mainline kernel line
+> uses Arch Linux ARM with PiKVM's own repository (`make rootfs-arch`,
+> `docs/09-mainline-bringup.md` §12). The BSP line keeps Debian 13.
+>
 > **To revisit on the `kernel-6.18` branch (decided 2026-09-22).** The
 > evidence below rules Arch out *because of the BSP's 4.9 kernel*: systemd
 > 258 dropped cgroup v1 and raised its floor to 5.4, and ALARM is rolling, so
@@ -161,6 +165,13 @@ QEMU could not surface these:
 Details are in "Pitfalls fixed along the way" in `06-changes.md`.
 
 ### On tracking PiKVM package updates
+
+> **Corrected 2026-10-01:** PiKVM's `rpi4-aarch64` repository does carry
+> `raspberrypi-io-access`, `raspberrypi-utils` and `janus-gateway-pikvm` for
+> aarch64, so on Arch kvmd's dependencies install as they are. What remains
+> true is that there is no `kvmd-platform-*-bpi-w2`, and that our ustreamer
+> and kvmd carry patches, so those two are built here and held back with
+> `IgnorePkg`. Everything else follows upstream.
 
 Not possible, and this has nothing to do with the distro choice. kvmd's Arch
 PKGBUILD depends on `raspberrypi-io-access`, `raspberrypi-utils` and

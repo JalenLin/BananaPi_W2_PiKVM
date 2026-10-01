@@ -4,7 +4,7 @@
 # docker/builder.Dockerfile); the host only needs docker, git and bash.
 
 .PHONY: help builder sources kernel uboot rootfs image all clean-kernel distclean \
-        builder-mainline sources-mainline kernel-mainline image-mainline \
+        builder-mainline sources-mainline kernel-mainline rootfs-arch image-mainline \
         clean-kernel-mainline
 
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "make builder-mainline  - build the trixie compile container"
 	@echo "make sources-mainline  - fetch the mainline kernel next to the BSP"
 	@echo "make kernel-mainline   - build Image + dtbs + modules"
+	@echo "make rootfs-arch       - build the Arch Linux ARM + PiKVM rootfs it uses"
 	@echo "make image-mainline    - assemble an SD image with that kernel"
 
 builder:
@@ -56,6 +57,9 @@ sources-mainline:
 
 kernel-mainline:
 	scripts/build-kernel-mainline.sh
+
+rootfs-arch:
+	scripts/build-rootfs-arch.sh
 
 image-mainline:
 	KERNEL_FLAVOUR=mainline scripts/build-image.sh

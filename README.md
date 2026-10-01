@@ -54,6 +54,16 @@ Individual steps:
 | `make rootfs` | Build the Debian 13 arm64 rootfs (with ustreamer + kvmd) |
 | `make image` | Assemble the SD image |
 
+On this branch (`kernel-6.18`), the mainline kernel has its own line:
+
+| Command | What it does |
+|---------|--------------|
+| `make builder-mainline sources-mainline kernel-mainline` | Build the 6.18 kernel |
+| `make rootfs-arch` | Build the Arch Linux ARM rootfs with PiKVM's packages (ustreamer and kvmd built from our patched sources, Janus from PiKVM's repository) |
+| `make image-mainline` | Assemble `build/bpiw2-pikvm-mainline.img` from those two |
+
+The BSP kernel stays on Debian: Arch's systemd cannot run on 4.9.
+
 The arm64 rootfs is built under binfmt/qemu emulation. It is slow, and the
 emulated Python occasionally SIGSEGVs for no reason — the scripts retry.
 

@@ -28,6 +28,7 @@ sit side by side and the build picks one.
 | `scripts/push-kernel-mainline.sh` | Installs a new kernel on a running board over ssh |
 | `docker/builder-mainline.Dockerfile` | Trixie + `gcc-aarch64-linux-gnu` 14.2 |
 | `scripts/build-kernel-mainline.sh` | Copies the DTS in, configures, builds |
+| `scripts/build-rootfs-arch.sh`, `scripts/rootfs-arch.sh` | The Arch Linux ARM + PiKVM rootfs this kernel line uses (§12) |
 
 ```sh
 make builder-mainline     # trixie compile container
@@ -1531,7 +1532,47 @@ mid-GOP. A browser sends a PLI for a new stream, and kvmd's UI also sends
 Still to do: audio. On the BSP the ACPU firmware captures the HDMI input's
 audio over Realtek's RPC; mainline has no driver for that.
 
-## 12. Sources
+## 12. The rootfs: Arch Linux ARM with PiKVM's packages
+
+Debian was chosen because of the BSP kernel: systemd 258 and later need
+Linux 5.4, and Arch's systemd is past that (`02-decisions.md`, D3). The 6.18
+line does not have that problem, so it uses what PiKVM OS itself is built
+from. `make rootfs-arch` produces `build/rootfs-arch.tar`, and `make
+image-mainline` uses it. The BSP image keeps the Debian rootfs.
+
+| Part | Source |
+|---|---|
+| Base system | Arch Linux ARM's generic aarch64 tarball, imported as a docker image and upgraded in it |
+| Janus, and kvmd's dependencies Arch lacks (`raspberrypi-io-access`, `raspberrypi-utils`, ...) | PiKVM's repository, `files.pikvm.org/repos/arch/rpi4-aarch64`, signed with key `912C773ABBD1B584` (the one PiKVM's own builder uses) |
+| ustreamer, kvmd | Upstream's PKGBUILDs, built from `vendor/` with our patches. They are in `IgnorePkg`, so `pacman -Syu` keeps them |
+| Platform config | `overlay/`, as before. No `kvmd-platform-*` package is for this board; the sysctl, udev and sudoers files such a package installs are copied from kvmd's `configs.default` |
+| Kernel | None installed. Arch Linux ARM's `linux-aarch64` and `linux-firmware` are removed; the image step adds our modules and VE1's firmware |
+
+Running pacman and makepkg under qemu-user needs four adjustments:
+
+- pacman 7's download sandbox needs Landlock, which qemu-user does not have:
+  `DisableSandbox*`, as PiKVM's builder does. The image gets the sandbox
+  (and `CheckSpace`) back.
+- setuid does not work, so makepkg cannot install dependencies through sudo.
+  The script reads them from `makepkg --printsrcinfo` and installs the ones
+  `pacman -T` reports missing, as root.
+- `vendor/ustreamer` can hold object files from a Debian build, whose
+  dependency files name Debian's header paths. `prepare()` runs `make
+  clean`.
+- gcc 16's `cc1` crashes under qemu often enough that the ustreamer package
+  failed three makepkg attempts in a row (each attempt starts from scratch).
+  During the build `/usr/local/bin/gcc` and `cc` wrap the compiler and retry
+  a single compilation that dies of a signal or an internal compiler error.
+
+Arch Linux ARM masks udev's predictable interface names
+(`/etc/systemd/network/99-default.link`), so the NIC is `eth0` here, not
+`end0` as on the Debian image. The network file matches `Type=ether`, so
+either works.
+
+Upstream's ustreamer PKGBUILD does not list `speexdsp`, which the Janus
+plugin needs; the script installs it explicitly.
+
+## 13. Sources
 
 | Source | Used for |
 |--------|----------|

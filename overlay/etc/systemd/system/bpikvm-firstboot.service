@@ -2,8 +2,9 @@
 Description=BPI-W2 PiKVM first boot key generation
 Documentation=file:///usr/local/bin/bpikvm-firstboot
 ConditionPathExists=!/var/lib/bpikvm/firstboot-done
-# Both ssh and kvmd-nginx need their keys to exist before they can start
-Before=ssh.service kvmd-nginx.service
+# Both ssh (Debian: ssh.service, Arch: sshd.service) and kvmd-nginx need
+# their keys to exist before they can start
+Before=ssh.service sshd.service kvmd-nginx.service
 After=local-fs.target
 
 [Service]

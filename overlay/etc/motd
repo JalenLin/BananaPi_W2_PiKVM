@@ -1,7 +1,8 @@
   BPI-W2 PiKVM
   ────────────────────────────────────────────────
-  kernel  see uname -r: BSP 4.9 or mainline 6.18 (branch kernel-6.18)
-  rootfs  Debian 13 (trixie) arm64
+  kernel  uname -r: BSP 4.9, or mainline 6.18 (branch kernel-6.18)
+  rootfs  /etc/os-release: Debian 13 with the BSP kernel,
+          Arch Linux ARM + PiKVM packages with the mainline one
 
   Web UI    https://<this board's IP>/   admin / admin
   Console   root / pikvm
@@ -12,9 +13,9 @@
 
   Handy commands:
     hdmirx-info                 detected input timings and V4L2 caps
-    hdmirx-capture 30 NV16      grab 30 frames to /tmp/hdmirx.raw
+    hdmirx-capture 30 NV12      grab 30 frames to /tmp/hdmirx.raw
     systemctl status kvmd kvmd-nginx
 
-  USB HID (keyboard + mouse) is enabled -- connect the board's Type-C
-  port to the target machine.
-  MSD (virtual media) and ATX are not enabled.
+  The board's Type-C port goes to the target machine: keyboard, mouse and
+  virtual media (MSD). ATX is not wired.
+  Video: MJPEG; with the mainline kernel also H.264 (direct and WebRTC).

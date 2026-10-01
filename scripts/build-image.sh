@@ -21,12 +21,16 @@ case "$FLAVOUR" in
         KIMAGE="$BSP/linux-rtk/arch/arm64/boot/Image"
         KDTB="$BSP/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296-bananapi-w2-2GB.dtb"
         OUT="$BUILD/bpiw2-pikvm.img"
+        # Debian 13 (make rootfs): Arch's systemd cannot run on 4.9
+        ROOTFS=rootfs.tar
         ;;
     mainline)
         LINUX="$PROJECT_ROOT/vendor/linux-mainline"
         KIMAGE="$LINUX/arch/arm64/boot/Image"
         KDTB="$LINUX/arch/arm64/boot/dts/realtek/rtd1296-bananapi-w2.dtb"
         OUT="$BUILD/bpiw2-pikvm-mainline.img"
+        # Arch Linux ARM + PiKVM packages (make rootfs-arch)
+        ROOTFS=rootfs-arch.tar
         ;;
     *)
         echo "KERNEL_FLAVOUR must be 'bsp' or 'mainline', got '$FLAVOUR'" >&2
@@ -43,7 +47,7 @@ for f in "$BSP/u-boot-rtk/u-boot.bin" \
          "$KDTB" \
          "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/bluecore.audio" \
          "$BSP/rtk-pack/rtk/bpi-w2/configs/default/linux/uInitrd" \
-         "$BUILD/rootfs.tar"; do
+         "$BUILD/$ROOTFS"; do
     [ -f "$f" ] || { echo "missing: $f"; exit 1; }
 done
 
@@ -90,8 +94,8 @@ if [ "$FLAVOUR" = "mainline" ]; then
     echo ">>> patched arm64 text_offset to $TEXT_OFFSET (old bootloaders ignore the relocatable flag)"
 fi
 if [ "$FLAVOUR" = "mainline" ]; then
-    # rootfs.tar carries the BSP kernel's modules. Stage the mainline ones
-    # next to it; the assembly step below swaps them in. Stripped, because
+    # The rootfs has no kernel modules (or the BSP's). Stage the mainline
+    # ones; the assembly step below puts them in. Stripped, because
     # arm64 defconfig builds several hundred modules with full debug info.
     echo ">>> installing the mainline modules"
     rm -rf "$BUILD/modules-mainline"
@@ -165,7 +169,7 @@ mcopy -i /b/p1.img -s /b/bootfs/* ::/
 
 # p2: ext4 + rootfs
 rm -rf /b/rootfs && mkdir -p /b/rootfs
-tar xf /b/rootfs.tar -C /b/rootfs
+tar xf /b/$ROOTFS -C /b/rootfs
 if [ -d /b/modules-mainline/lib/modules ] && [ $FLAVOUR = mainline ]; then
     # The BSP modules cannot load into this kernel; replace them. Plain cp,
     # not cp -a: the staged tree belongs to the build uid, and the rootfs
