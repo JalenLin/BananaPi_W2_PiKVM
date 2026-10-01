@@ -1475,6 +1475,9 @@ tree:
 | 1080p came out 1088 lines tall | The SPS crop flag is bit 2 on the CODA980, not 3 (`GetEncHeader`) | |
 | | No subsampled ME frames (their registers are the slice buffer there); a 470 KiB temp buffer (`coda9_vpuconfig.h`); no JPEG engine; no IRAM | |
 | ustreamer's forced keyframe failed with EINVAL | `coda_s_ctrl()` handles `FORCE_KEY_FRAME`, but the control was never created | Create it |
+| Colours were wrong in places and a ghost of other picture content showed through (Kodi's "OK" button text, in its text field) | NV12's chroma is interleaved, and the CODA980 takes that from a per-picture flag, not from `FRAME_MEM_CTRL`. Without it, Cr was read from a planar offset, inside the CbCr plane | `ENC_PIC_ROT_MODE` bit 18 for NV12 (libvpu, `Coda9VpuEncode`: `cbcrInterleave << 18`) |
+| Coloured edges (the focused button, a highlighted field) drifted further from the source with every P-frame: invisible with a short GOP, obvious at kvmd's default of 0 | The CODA960 frame cache settings (`SET_FRAME_CACHE_SIZE/CONFIG`) make the CODA980 read stale reference data | Leave the cache alone, as libvpu does here. 1080p still encodes at about 70 fps |
+| Early in boot, `VE1 SRAM power-on not acked` | The first power-on of the SRAM domain is not acked, not even after 50 ms; off and on again it acks in ~50 us | Retry; clear the stale off-ack first |
 | The last 8 lines of 1080p were green | The receiver lays NV12 out at 1088 lines and never writes the padding. Zero chroma there (U = V = 0) makes the CODA980 garble the whole last macroblock row, visible lines included. Zero luma does no harm | The receiver driver fills the padding with black (Y 16, UV 128) when it allocates a buffer (`hdmi_buffer_init`) |
 
 Only the H.264 encoder is registered, because nothing else has been tried.
@@ -1523,6 +1526,17 @@ mid-GOP. A browser sends a PLI for a new stream, and kvmd's UI also sends
   sink. 1920x1080, 30 fps (ustreamer's own limit above 720p). The CPU is 92%
   idle. The stream decodes cleanly as 1920x1080.
 - Encoder sessions opened back to back keep working.
+- After the three fixes above (2026-10-01, Arch image): a captured Kodi frame
+  encodes with a mean chroma error of 0.12 against the source, libx264 at the
+  same QP 0.08; 60 frames at GOP 0 show no drift; and Kodi's coloured
+  buttons are right through kvmd-media and WebRTC. AMD's VAAPI decoder agrees
+  with ffmpeg's, so the earlier errors were in the bitstream, not in one
+  decoder.
+- Testing traps met on the way: `v4l2-ctl --stream-from` with a crop
+  selection reads the file in frames of the visible size, so every frame
+  after the first is misaligned; a decoded stream is 1088 lines tall when
+  no crop was set; and Kodi dims its screen when idle, which stops the
+  cursor blinking and hides colour problems. Wake it with a key first.
 - Through kvmd: `/api/media/ws` (kvmd-media) delivers the H.264 at 24 fps.
   A headless WebRTC client (aiortc, on the PC) goes through `/janus/ws` and
   `janus.plugin.ustreamer` the way the UI does, and receives 1920x1080 at

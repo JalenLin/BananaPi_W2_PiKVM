@@ -21,6 +21,14 @@ the Android libvpu (both in BPI's trees):
   (the SPS came out as High profile with a bogus bit depth); zero them
   first. The SPS frame-crop flag is bit 2, not 3.
 - No subsampled frames, a 470 KiB temp buffer, no JPEG engine, no IRAM.
+- The source's chroma layout is a per-picture flag (ENC_PIC_ROT_MODE bit
+  18): without it NV12 is read as planar and Cr comes from elsewhere in the
+  picture.
+- The CODA960 frame cache settings make it read stale reference data, so
+  colour edges drift with every P-frame; leave the cache alone, as libvpu
+  does.
+- Early in boot the first power-on of its SRAM domain is not acked; power
+  it off and on again.
 - The firmware reports product 0xe428 (CODA980), version 3.0.1.
 
 Also create V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, which coda_s_ctrl()
@@ -44,7 +52,7 @@ index cb7b66c71..60b3d0a79 100644
  	select VIDEOBUF2_DMA_CONTIG
  	select VIDEOBUF2_VMALLOC
 diff --git a/drivers/media/platform/chips-media/coda/coda-bit.c b/drivers/media/platform/chips-media/coda/coda-bit.c
-index 84ded154a..ca7f83c90 100644
+index 84ded154a..32f4b5b8b 100644
 --- a/drivers/media/platform/chips-media/coda/coda-bit.c
 +++ b/drivers/media/platform/chips-media/coda/coda-bit.c
 @@ -132,9 +132,14 @@ int coda_hw_reset(struct coda_ctx *ctx)
@@ -137,9 +145,19 @@ index 84ded154a..ca7f83c90 100644
  	coda_write(dev, num_fb, CODA_CMD_SET_FRAME_BUF_NUM);
  	coda_write(dev, stride, CODA_CMD_SET_FRAME_BUF_STRIDE);
  
-@@ -1367,11 +1398,16 @@ static int coda_start_encoding(struct coda_ctx *ctx)
+@@ -1365,13 +1396,25 @@ static int coda_start_encoding(struct coda_ctx *ctx)
+ 			coda_write(dev, ctx->iram_info.buf_btp_use,
+ 					CODA9_CMD_SET_FRAME_AXI_BTP_ADDR);
  
- 			coda9_set_frame_cache(ctx, q_data_src->fourcc);
+-			coda9_set_frame_cache(ctx, q_data_src->fourcc);
++			/*
++			 * The CODA960 frame cache settings make the CODA980
++			 * read stale reference data: colour edges drift, a bit
++			 * more with every P-frame. libvpu leaves the cache
++			 * alone in this configuration, and so does this.
++			 */
++			if (dev->devtype->fw_product != CODA_980)
++				coda9_set_frame_cache(ctx, q_data_src->fourcc);
  
 -			/* FIXME */
 -			coda_write(dev, ctx->internal_frames[2].buf.paddr,
@@ -159,16 +177,27 @@ index 84ded154a..ca7f83c90 100644
  		}
  	}
  
-@@ -1587,6 +1623,7 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
+@@ -1587,8 +1630,18 @@ static int coda_prepare_encode(struct coda_ctx *ctx)
  	}
  
  	/* submit */
 +	coda980_clear_params(dev);
  	if (ctx->params.rot_mode)
  		rot_mode = CODA_ROT_MIR_ENABLE | ctx->params.rot_mode;
++	/*
++	 * The CODA980 takes the source's chroma layout per picture, not from
++	 * FRAME_MEM_CTRL: without this flag NV12's interleaved chroma is read
++	 * as planar, and Cr comes from elsewhere in the picture (Realtek's
++	 * libvpu, Coda9VpuEncode: FrameBuffer.cbcrInterleave << 18).
++	 */
++	if (dev->devtype->fw_product == CODA_980 &&
++	    q_data_src->fourcc == V4L2_PIX_FMT_NV12)
++		rot_mode |= CODA980_ROT_SRC_CBCR_INTERLEAVE;
  	coda_write(dev, rot_mode, CODA_CMD_ENC_PIC_ROT_MODE);
+ 	coda_write(dev, quant_param, CODA_CMD_ENC_PIC_QS);
+ 
 diff --git a/drivers/media/platform/chips-media/coda/coda-common.c b/drivers/media/platform/chips-media/coda/coda-common.c
-index 9a57b042d..93e0e0ebb 100644
+index 9a57b042d..dcb764732 100644
 --- a/drivers/media/platform/chips-media/coda/coda-common.c
 +++ b/drivers/media/platform/chips-media/coda/coda-common.c
 @@ -7,6 +7,7 @@
@@ -256,7 +285,7 @@ index 9a57b042d..93e0e0ebb 100644
  		fallthrough;
  	case CODA_HX4:
  	case CODA_7541:
-@@ -2783,6 +2807,53 @@ static const struct v4l2_file_operations coda_fops = {
+@@ -2783,6 +2807,67 @@ static const struct v4l2_file_operations coda_fops = {
  	.mmap		= v4l2_m2m_fop_mmap,
  };
  
@@ -279,19 +308,33 @@ index 9a57b042d..93e0e0ebb 100644
 +void coda_rtd129x_power_on(struct coda_dev *dev)
 +{
 +	u32 val;
-+	int ret;
++	int i, ret;
 +
++	/*
++	 * Early in boot the first power-on of the SRAM domain is not acked,
++	 * not even after 50 ms; powered off and on again it acks within some
++	 * 50 us. The BIT's code RAM must not take the firmware download
++	 * unpowered. A stale ack, from powering off, would end the wait at
++	 * once, so it is cleared first.
++	 */
 +	regmap_read(dev->crt, RTD129X_CRT_VE1_SRAM_PWR, &val);
-+	if (val != 0xf00) {
++	for (i = 0; val != 0xf00 && i < 3; i++) {
++		regmap_write(dev->crt, RTD129X_CRT_VE1_SRAM_ACK, 4);
 +		regmap_write(dev->crt, RTD129X_CRT_VE1_SRAM_PWR, 0xf00);
 +		ret = regmap_read_poll_timeout(dev->crt,
 +					       RTD129X_CRT_VE1_SRAM_ACK, val,
-+					       val == 4, 1, 500);
-+		if (ret)
-+			dev_warn(dev->dev, "VE1 SRAM power-on not acked (%#x)\n",
-+				 val);
++					       val == 4, 10, 10000);
 +		regmap_write(dev->crt, RTD129X_CRT_VE1_SRAM_ACK, 4);
++		if (!ret)
++			break;
++		dev_dbg(dev->dev, "VE1 SRAM power-on not acked, retrying\n");
++		regmap_write(dev->crt, RTD129X_CRT_VE1_SRAM_PWR, 0xf01);
++		regmap_read_poll_timeout(dev->crt, RTD129X_CRT_VE1_SRAM_ACK,
++					 val, val == 4, 10, 10000);
++		val = 0xf01;
 +	}
++	if (i == 3)
++		dev_err(dev->dev, "VE1 SRAM power-on not acked\n");
 +
 +	reset_control_assert(dev->rstc);
 +	reset_control_deassert(dev->rstc);
@@ -310,7 +353,7 @@ index 9a57b042d..93e0e0ebb 100644
  static int coda_hw_init(struct coda_dev *dev)
  {
  	u32 data;
-@@ -2797,7 +2868,10 @@ static int coda_hw_init(struct coda_dev *dev)
+@@ -2797,7 +2882,10 @@ static int coda_hw_init(struct coda_dev *dev)
  	if (ret)
  		goto err_clk_ahb;
  
@@ -322,7 +365,7 @@ index 9a57b042d..93e0e0ebb 100644
  
  	/*
  	 * Copy the first CODA_ISRAM_SIZE in the internal SRAM.
-@@ -2850,7 +2924,10 @@ static int coda_hw_init(struct coda_dev *dev)
+@@ -2850,7 +2938,10 @@ static int coda_hw_init(struct coda_dev *dev)
  		coda_write(dev, CODA7_STREAM_BUF_PIC_FLUSH,
  			   CODA_REG_BIT_STREAM_CTRL);
  	}
@@ -334,7 +377,7 @@ index 9a57b042d..93e0e0ebb 100644
  		coda_write(dev, CODA9_FRAME_ENABLE_BWB,
  				CODA_REG_BIT_FRAME_MEM_CTRL);
  	else
-@@ -3057,6 +3134,7 @@ enum coda_platform {
+@@ -3057,6 +3148,7 @@ enum coda_platform {
  	CODA_IMX53,
  	CODA_IMX6Q,
  	CODA_IMX6DL,
@@ -342,7 +385,7 @@ index 9a57b042d..93e0e0ebb 100644
  };
  
  static const struct coda_devtype coda_devdata[] = {
-@@ -3134,6 +3212,24 @@ static const struct coda_devtype coda_devdata[] = {
+@@ -3134,6 +3226,24 @@ static const struct coda_devtype coda_devdata[] = {
  		.tempbuf_size = 204 * 1024,
  		.iram_size    = 0x1f000, /* leave 4k for suspend code */
  	},
@@ -367,7 +410,7 @@ index 9a57b042d..93e0e0ebb 100644
  };
  
  static const struct of_device_id coda_dt_ids[] = {
-@@ -3142,6 +3238,7 @@ static const struct of_device_id coda_dt_ids[] = {
+@@ -3142,6 +3252,7 @@ static const struct of_device_id coda_dt_ids[] = {
  	{ .compatible = "fsl,imx53-vpu", .data = &coda_devdata[CODA_IMX53] },
  	{ .compatible = "fsl,imx6q-vpu", .data = &coda_devdata[CODA_IMX6Q] },
  	{ .compatible = "fsl,imx6dl-vpu", .data = &coda_devdata[CODA_IMX6DL] },
@@ -375,7 +418,7 @@ index 9a57b042d..93e0e0ebb 100644
  	{ /* sentinel */ }
  };
  MODULE_DEVICE_TABLE(of, coda_dt_ids);
-@@ -3192,7 +3289,7 @@ static int coda_probe(struct platform_device *pdev)
+@@ -3192,7 +3303,7 @@ static int coda_probe(struct platform_device *pdev)
  	}
  
  	/* JPEG IRQ */
@@ -384,7 +427,7 @@ index 9a57b042d..93e0e0ebb 100644
  		irq = platform_get_irq_byname(pdev, "jpeg");
  		if (irq < 0)
  			return irq;
-@@ -3215,9 +3312,16 @@ static int coda_probe(struct platform_device *pdev)
+@@ -3215,9 +3326,16 @@ static int coda_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -402,7 +445,7 @@ index 9a57b042d..93e0e0ebb 100644
  		dev_err(&pdev->dev, "iram pool not available\n");
  		return -ENOMEM;
  	}
-@@ -3257,10 +3361,13 @@ static int coda_probe(struct platform_device *pdev)
+@@ -3257,10 +3375,13 @@ static int coda_probe(struct platform_device *pdev)
  	}
  
  	dev->iram.size = dev->devtype->iram_size;
@@ -483,7 +526,7 @@ index ddfd0a32c..92656f8a9 100644
  int coda_check_firmware(struct coda_dev *dev);
  
 diff --git a/drivers/media/platform/chips-media/coda/coda_regs.h b/drivers/media/platform/chips-media/coda/coda_regs.h
-index db81a904c..ea0f26c5a 100644
+index db81a904c..91ed783b6 100644
 --- a/drivers/media/platform/chips-media/coda/coda_regs.h
 +++ b/drivers/media/platform/chips-media/coda/coda_regs.h
 @@ -48,6 +48,11 @@
@@ -498,7 +541,15 @@ index db81a904c..ea0f26c5a 100644
  #define		CODA9_FRAME_TILED2LINEAR	(1 << 11)
  #define		CODA_FRAME_CHROMA_INTERLEAVE	(1 << 2)
  #define		CODA_IMAGE_ENDIAN_SELECT	(1 << 0)
-@@ -434,6 +439,7 @@
+@@ -372,6 +377,7 @@
+ #define CODA_CMD_ENC_PIC_SRC_ADDR_CR	0x188
+ #define CODA_CMD_ENC_PIC_QS		0x18c
+ #define CODA_CMD_ENC_PIC_ROT_MODE	0x190
++#define		CODA980_ROT_SRC_CBCR_INTERLEAVE		BIT(18)
+ #define		CODA_ROT_MIR_ENABLE				(1 << 4)
+ #define		CODA_ROT_0					(0x0 << 0)
+ #define		CODA_ROT_90					(0x1 << 0)
+@@ -434,6 +440,7 @@
  #define		CODA_HEADER_MP4V_VOS	1
  #define		CODA_HEADER_MP4V_VIS	2
  #define		CODA9_HEADER_FRAME_CROP	(1 << 3)
