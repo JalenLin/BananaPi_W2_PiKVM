@@ -159,7 +159,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
 | **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11 |
-| **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus -- see §13. Not yet heard with a source actually playing |
+| **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1690,9 +1690,18 @@ plugin leaves audio out.
   PP, connections) with the memory this driver hands it.
 - `arecord -D hw:hdmirx` delivers 48 kHz stereo in real time.
 - A headless WebRTC client gets `features.audio = true`, an Opus track, and
-  480 samples per 10 ms. That is silence for now: the source (Kodi on a
-  Pi) sends no audio packets, and the receiver logs `Audio Sample miss`.
-- Not yet checked: real audio from a source that plays some.
+  480 samples per 10 ms.
+- With Kodi on the Pi playing a video: the receiver sees the audio
+  infoframe, ACR (N = 6144, 48 kHz) and audio sample packets, and logs
+  `audio state 1`. Five seconds from `arecord` have no silent 100 ms block
+  (peak about -11 dBFS), and the spectrogram shows continuous harmonics up
+  to the source's 21 kHz, with no periodic clicks. Over WebRTC the decoded
+  Opus peaks at a similar level.
+- A trap on the way: Kodi had its audio output set to Bluetooth, so the Pi
+  sent no audio over HDMI at all. To see what a source really sends, point
+  the receiver's packet slot 2 (`HDMI_PTRSV1` bits 15:8, `0x980340b0`) at
+  a packet type, clear `HDMI_GPVS` bit 6, and see whether it comes back:
+  0x84 audio infoframe, 0x01 ACR, 0x02 audio sample.
 
 The firmware prints `[AO][_AO_if_video_HDMI_mode]HDMI not enabled` on the
 serial console about every 3 s. That is the board's own HDMI output, for
