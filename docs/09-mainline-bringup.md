@@ -1557,7 +1557,7 @@ image-mainline` uses it. The BSP image keeps the Debian rootfs.
 | Part | Source |
 |---|---|
 | Base system | Arch Linux ARM's generic aarch64 tarball, imported as a docker image and upgraded in it |
-| Janus, and kvmd's dependencies Arch lacks (`raspberrypi-io-access`, `raspberrypi-utils`, ...) | PiKVM's repository, `files.pikvm.org/repos/arch/rpi4-aarch64`, signed with key `912C773ABBD1B584` (the one PiKVM's own builder uses) |
+| Janus, the Web UI's terminal (`kvmd-webterm`, ttyd), and kvmd's dependencies Arch lacks (`raspberrypi-io-access`, `raspberrypi-utils`, ...) | PiKVM's repository, `files.pikvm.org/repos/arch/rpi4-aarch64`, signed with key `912C773ABBD1B584` (the one PiKVM's own builder uses) |
 | ustreamer, kvmd | Upstream's PKGBUILDs, built from `vendor/` with our patches. They are in `IgnorePkg`, so `pacman -Syu` keeps them |
 | Platform config | `overlay/`, as before. No `kvmd-platform-*` package is for this board; the sysctl, udev and sudoers files such a package installs are copied from kvmd's `configs.default` |
 | Kernel | None installed. Arch Linux ARM's `linux-aarch64` and `linux-firmware` are removed; the image step adds our modules and VE1's firmware |
@@ -1577,6 +1577,11 @@ Running pacman and makepkg under qemu-user needs four adjustments:
   failed three makepkg attempts in a row (each attempt starts from scratch).
   During the build `/usr/local/bin/gcc` and `cc` wrap the compiler and retry
   a single compilation that dies of a signal or an internal compiler error.
+
+pacman 7 downloads inside a Landlock sandbox and refuses to download
+without it, so the kernel needs `CONFIG_SECURITY_LANDLOCK` (arm64 defconfig
+leaves it out). Until it was added, `pacman -Sy` on the board failed with
+"switching to sandbox user 'alpm' failed".
 
 Arch Linux ARM masks udev's predictable interface names
 (`/etc/systemd/network/99-default.link`), so the NIC is `eth0` here, not

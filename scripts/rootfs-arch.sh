@@ -161,6 +161,10 @@ install_deps "$PKG/kvmd"
 (cd "$PKG/kvmd" && retry sudo -u builder makepkg --noconfirm)
 pacman --noconfirm -U "$PKG"/kvmd/kvmd-[0-9]*.pkg.tar.*
 
+# The Web UI's terminal (ttyd behind kvmd's nginx), as on PiKVM OS. After
+# kvmd, so that its dependency on kvmd is already met by ours.
+retry pacman --noconfirm --needed -S kvmd-webterm
+
 # What a kvmd-platform-* package would add besides main.yaml (which, with
 # the udev rules and the platform file, comes from overlay/)
 CFG=/usr/share/kvmd/configs.default
@@ -234,7 +238,7 @@ done
 done
 
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd sshd \
-    kvmd kvmd-nginx kvmd-otg kvmd-media kvmd-janus bpikvm-firstboot
+    kvmd kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot
 
 # -- what must not be in an image -------------------------------------
 # Keys: bpikvm-firstboot creates them on each board. kvmd.install has just
@@ -271,5 +275,5 @@ if [ -n "$keys" ]; then
     exit 1
 fi
 
-pacman -Q kvmd ustreamer janus-gateway-pikvm
+pacman -Q kvmd ustreamer janus-gateway-pikvm kvmd-webterm
 echo ">>> PiKVM userspace (Arch) installed"

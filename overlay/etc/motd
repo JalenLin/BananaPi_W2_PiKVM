@@ -18,4 +18,5 @@
 
   The board's Type-C port goes to the target machine: keyboard, mouse and
   virtual media (MSD). ATX is not wired.
-  Video: MJPEG; with the mainline kernel also H.264 (direct and WebRTC).
+  Video: MJPEG; with the mainline kernel also H.264 (direct and WebRTC),
+  and a terminal in the Web UI (Arch image).
