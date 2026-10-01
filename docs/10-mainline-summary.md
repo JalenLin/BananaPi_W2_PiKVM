@@ -150,9 +150,8 @@ cannot be unloaded.
   but there is no audio. The firmware's debug output ("HDMI not enabled"
   every 3 s on the serial console) is turned off by the driver, by clearing
   bit 0 of the firmware's debug flag once it has started; `fw_debug=1` keeps
-  it. Clearing that bit by hand silenced it, and audio kept working. The
-  driver's own path to it had not run on the board yet when this was
-  written.
+  it. Verified from a fresh flash: none in 45 s after boot, and audio over
+  WebRTC unaffected.
 - **Memory the firmware owns.** The DTS reserves the audio firmware (5 MiB at
   `0x0f900000`), its RPC pages, the audio and media heaps and the regions u-boot
   reserves. The kernel loads at `0x1c000000`, above all of them (§5).

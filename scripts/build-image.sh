@@ -141,7 +141,8 @@ P1_SECTORS=$(( P1_MB * 2048 ))
 P2_START=$(( P1_START + P1_SECTORS ))
 echo ">>> boot partition: ${P1_MB} MiB (${staged_mb} MiB staged), rootfs starts at sector $P2_START"
 
-rm -rf "$BUILD/overlay-bsp"
+rm -rf "$BUILD/overlay" "$BUILD/overlay-bsp"
+cp -r "$PROJECT_ROOT/overlay" "$BUILD/overlay"
 cp -r "$PROJECT_ROOT/overlay-bsp" "$BUILD/overlay-bsp"
 
 echo ">>> assembling the image (in a container, no loop device needed)"
@@ -179,9 +180,15 @@ if [ -d /b/modules-mainline/lib/modules ] && [ $FLAVOUR = mainline ]; then
     mkdir -p /b/rootfs/usr/lib/firmware
     cp /b/firmware-mainline/* /b/rootfs/usr/lib/firmware/
 fi
+# overlay/ again: the rootfs builds put it in, but a change to it should not
+# need a rootfs rebuild (which takes the better part of an hour) to reach the
+# image. Modes as rootfs-arch.sh sets them: 755 for executables, else 644.
+(cd /b/overlay && find . ! -type d -printf '%P\\n') | while read -r f; do
+    if [ -x /b/overlay/\$f ]; then m=755; else m=644; fi
+    install -D -m \$m /b/overlay/\$f /b/rootfs/\$f
+done
 if [ $FLAVOUR = bsp ]; then
-    # Files for the BSP kernel only (overlay-bsp/); plain cp keeps them
-    # root-owned
+    # Files for the BSP kernel only (overlay-bsp/)
     cp -r /b/overlay-bsp/. /b/rootfs/
 fi
 P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))

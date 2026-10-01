@@ -109,7 +109,7 @@ struct rpc_hdr {
  */
 #define FW_PTR_DEBUG_FLAG	0x0035daa4
 #define FW_HDMI_MSG		0x003bd230
-static const char fw_hdmi_msg[] = "[AO][_AO_if_video_HDMI_mode]HDMI not enabled";
+static const char fw_hdmi_msg[] = "[AO][_AO_if_video_HDMI_mode]HDMI not enabled\n";
 
 static bool fw_debug;
 module_param(fw_debug, bool, 0444);

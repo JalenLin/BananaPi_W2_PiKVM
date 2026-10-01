@@ -64,7 +64,7 @@ retry pacman --noconfirm -Syu
 # -- base system ------------------------------------------------------
 retry pacman --noconfirm --needed -S \
     sudo openssh nano htop less busybox \
-    v4l-utils usbutils pciutils i2c-tools \
+    v4l-utils usbutils pciutils i2c-tools alsa-utils \
     e2fsprogs dosfstools parted cloud-guest-utils \
     janus-gateway-pikvm
 

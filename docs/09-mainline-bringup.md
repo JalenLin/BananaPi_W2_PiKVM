@@ -1715,8 +1715,10 @@ clears the bit in the firmware's data, after the firmware's first memory
 request (by then the flag is set up). It does so only if the message
 string sits where this firmware build has it, and not with `fw_debug=1`.
 
-Clearing the bit by hand stopped the message (none in 45 s), and capture
-went on working.
+Verified from a freshly flashed card: no such line in the 45 s after the
+boot, and WebRTC audio as before. The first version compared the string
+without its trailing newline, did not recognise the build, and said so
+(`unknown firmware build, debug output left on`).
 
 ## 14. Sources
 
