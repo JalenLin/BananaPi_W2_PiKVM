@@ -1,0 +1,13 @@
+# Installed by scripts/build-image.sh into images with the BSP 4.9 kernel only.
+#
+# /usr/lib/kvmd/main.yaml asks ustreamer for H.264 from VE1 through the
+# mainline coda driver. The BSP kernel has no such V4L2 device, so take those
+# options out again; MJPEG is unaffected.
+kvmd:
+    streamer:
+        cmd_remove:
+            - "--h264-sink=kvmd::ustreamer::h264"
+            - "--h264-sink-mode=0660"
+            - "--h264-bitrate={h264_bitrate}"
+            - "--h264-gop={h264_gop}"
+            - "--h264-m2m-device=/dev/kvmd-h264"

@@ -34,6 +34,7 @@ docker run --name "$CID" --platform linux/arm64 \
     -v "$PROJECT_ROOT/vendor/bpi-w2-bsp/linux-rtk/.config:/tmp/kernel.config:ro" \
     -v "$PROJECT_ROOT/vendor/kvmd:/tmp/src/kvmd:ro" \
     -v "$PROJECT_ROOT/vendor/ustreamer:/tmp/src/ustreamer:ro" \
+    -v "$PROJECT_ROOT/vendor/janus-gateway:/tmp/src/janus-gateway:ro" \
     -v "$PROJECT_ROOT/scripts/rootfs-pikvm.sh:/tmp/rootfs-pikvm.sh:ro" \
     -v "$PROJECT_ROOT/overlay:/tmp/overlay:ro" \
     debian:trixie bash -eux -c '
@@ -86,7 +87,11 @@ apt_install \
     python3-spidev python3-systemd python3-usb python3-xlib \
     python3-yaml python3-zstandard \
     python3-pyghmi python3-pyrad python3-ldap python3-smbc python3-paramiko \
-    python3-setuptools
+    python3-setuptools \
+    libglib2.0-0t64 libjansson4 libconfig11 libwebsockets19t64 libnice10 \
+    libsrtp2-1 libopus0 libasound2t64 libspeexdsp1
+# The last line is for Janus and the ustreamer Janus plugin (WebRTC); they
+# are named here so that purging the -dev packages below cannot take them.
 
 # -- build and install ustreamer / kvmd -------------------------------
 # The build packages are removed afterwards and never reach the image.
@@ -99,7 +104,11 @@ apt_install \
 BUILD_DEPS="build-essential gcc g++ cpp make dpkg-dev libc6-dev binutils
             pkg-config python3-dev
             python3-build python3-installer python3-wheel
-            libevent-dev libjpeg62-turbo-dev libbsd-dev"
+            libevent-dev libjpeg62-turbo-dev libbsd-dev
+            autoconf automake libtool gengetopt
+            libglib2.0-dev libjansson-dev libconfig-dev libwebsockets-dev
+            libnice-dev libsrtp2-dev libssl-dev
+            libopus-dev libasound2-dev libspeexdsp-dev"
 # python3-setuptools is deliberately not listed here: python3-pyghmi ->
 # python3-pbr -> python3-setuptools, so purging it would take pyghmi too.
 apt_install $BUILD_DEPS

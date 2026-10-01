@@ -137,6 +137,9 @@ P1_SECTORS=$(( P1_MB * 2048 ))
 P2_START=$(( P1_START + P1_SECTORS ))
 echo ">>> boot partition: ${P1_MB} MiB (${staged_mb} MiB staged), rootfs starts at sector $P2_START"
 
+rm -rf "$BUILD/overlay-bsp"
+cp -r "$PROJECT_ROOT/overlay-bsp" "$BUILD/overlay-bsp"
+
 echo ">>> assembling the image (in a container, no loop device needed)"
 docker run --rm --entrypoint bash \
     -v "$BUILD:/b" -v "$BSP:/bsp:ro" debian:bookworm -euxc "
@@ -171,6 +174,11 @@ if [ -d /b/modules-mainline/lib/modules ] && [ $FLAVOUR = mainline ]; then
     cp -r /b/modules-mainline/lib/modules/. /b/rootfs/usr/lib/modules/
     mkdir -p /b/rootfs/usr/lib/firmware
     cp /b/firmware-mainline/* /b/rootfs/usr/lib/firmware/
+fi
+if [ $FLAVOUR = bsp ]; then
+    # Files for the BSP kernel only (overlay-bsp/); plain cp keeps them
+    # root-owned
+    cp -r /b/overlay-bsp/. /b/rootfs/
 fi
 P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))
 truncate -s \$(( P2_SECTORS * 512 )) /b/p2.img

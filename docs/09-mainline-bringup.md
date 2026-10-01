@@ -157,7 +157,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M4** | kvmd + ustreamer on 6.18 | **done** 2026-10-01: kvmd starts ustreamer on demand, keyboard input reaches the target and shows up in the capture -- see §10 |
 | **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
-| **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M | **done** 2026-10-01: 1080p H.264 from the HDMI capture through ustreamer -- see §11. WebRTC (Janus) not yet |
+| **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11. No audio |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1474,6 +1474,7 @@ tree:
 | 1080p came out 1088 lines tall | The SPS crop flag is bit 2 on the CODA980, not 3 (`GetEncHeader`) | |
 | | No subsampled ME frames (their registers are the slice buffer there); a 470 KiB temp buffer (`coda9_vpuconfig.h`); no JPEG engine; no IRAM | |
 | ustreamer's forced keyframe failed with EINVAL | `coda_s_ctrl()` handles `FORCE_KEY_FRAME`, but the control was never created | Create it |
+| The last 8 lines of 1080p were green | The receiver lays NV12 out at 1088 lines and never writes the padding. Zero chroma there (U = V = 0) makes the CODA980 garble the whole last macroblock row, visible lines included. Zero luma does no harm | The receiver driver fills the padding with black (Y 16, UV 128) when it allocates a buffer (`hdmi_buffer_init`) |
 
 Only the H.264 encoder is registered, because nothing else has been tried.
 
@@ -1489,6 +1490,29 @@ receiver starts NV12's chroma plane after 1088 lines, so ustreamer gives the
 encoder a 1088-line buffer and crops it to 1080 with `VIDIOC_S_SELECTION`.
 The capture buffers go to the encoder as DMA-BUFs, with no copy.
 
+### kvmd: direct H.264 and WebRTC
+
+`main.yaml` gives ustreamer the H.264 sink options of PiKVM V4. Two readers
+use that sink, as on a V4:
+
+- **kvmd-media**: H.264 over kvmd's own websocket. The Web UI's direct H.264
+  mode decodes it in the browser. No Janus is involved.
+- **kvmd-janus**: Janus with ustreamer's plugin, for WebRTC. PiKVM sends
+  audio only this way. Debian 13 has no Janus package, so the rootfs build
+  compiles v1.4.2 with PiKVM's `janus.js` patch (`patches/janus`), configured
+  as PiKVM's `janus-gateway-pikvm`, and builds ustreamer `WITH_JANUS=1`. The
+  plugin config (`overlay/etc/kvmd/janus`) has video only: there is no ALSA
+  device for the HDMI input's audio yet.
+
+An image with the BSP kernel removes the H.264 options again
+(`overlay-bsp/`), because that kernel has no encoder device.
+
+The plugin asks ustreamer for a keyframe only on a PLI/FIR, or on the UI's
+`key_required` message. ustreamer keeps encoding for 10 s after a sink client
+leaves (the client TTL), so a client that reconnects within that time joins
+mid-GOP. A browser sends a PLI for a new stream, and kvmd's UI also sends
+`key_required` when bytes arrive but no frames decode.
+
 ### Verified on hardware, 2026-10-01
 
 - Test patterns: a striped frame and a moving gradient decode back
@@ -1498,9 +1522,14 @@ The capture buffers go to the encoder as DMA-BUFs, with no copy.
   sink. 1920x1080, 30 fps (ustreamer's own limit above 720p). The CPU is 92%
   idle. The stream decodes cleanly as 1920x1080.
 - Encoder sessions opened back to back keep working.
+- Through kvmd: `/api/media/ws` (kvmd-media) delivers the H.264 at 24 fps.
+  A headless WebRTC client (aiortc, on the PC) goes through `/janus/ws` and
+  `janus.plugin.ustreamer` the way the UI does, and receives 1920x1080 at
+  30-36 fps with the last lines intact. A client that reconnects within
+  ustreamer's 10 s gets video after one `key_required`, as the UI would send.
 
-Still to do: kvmd's WebRTC path (Janus and ustreamer's Janus plugin), and
-then audio.
+Still to do: audio. On the BSP the ACPU firmware captures the HDMI input's
+audio over Realtek's RPC; mainline has no driver for that.
 
 ## 12. Sources
 

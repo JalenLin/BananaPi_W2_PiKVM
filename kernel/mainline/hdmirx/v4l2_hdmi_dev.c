@@ -148,6 +148,37 @@ static int hdmi_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 	return 0;
 }
 
+/*
+ * The semi-planar formats are laid out at a 16-line height (1080 -> 1088),
+ * and the DMA never writes the padding lines. Left at zero, their chroma is
+ * U = V = 0, and VE1's H.264 encoder (CODA980) then garbles the whole last
+ * macroblock row, visible lines included. Make the padding black once, when
+ * the buffer is allocated.
+ */
+static int hdmi_buffer_init(struct vb2_buffer *vb)
+{
+	struct v4l2_hdmi_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
+	unsigned int stride = roundup16(dev->width);
+	unsigned int h = dev->height, ah = roundup16(dev->height);
+	unsigned int c_h, c_ah;
+	u8 *p;
+
+	if (vb->memory != VB2_MEMORY_MMAP || dev->outfmt >= OUT_ARGB || h == ah)
+		return 0;
+
+	p = vb2_plane_vaddr(vb, 0);
+	if (!p || vb2_plane_size(vb, 0) < frame_size(dev))
+		return 0;
+
+	/* 4:2:0 has half as many chroma lines, 4:2:2 as many as luma */
+	c_h = dev->outfmt == OUT_8BIT_YUV420 ? h / 2 : h;
+	c_ah = dev->outfmt == OUT_8BIT_YUV420 ? ah / 2 : ah;
+
+	memset(p + stride * h, 16, stride * (ah - h));
+	memset(p + stride * ah + stride * c_h, 128, stride * (c_ah - c_h));
+	return 0;
+}
+
 static int hdmi_buffer_prepare(struct vb2_buffer *vb)
 {
 	struct v4l2_hdmi_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
@@ -272,6 +303,7 @@ static void hdmi_stop_streaming(struct vb2_queue *vq)
 
 static const struct vb2_ops hdmi_qops = {
 	.queue_setup		= hdmi_queue_setup,
+	.buf_init		= hdmi_buffer_init,
 	.buf_prepare		= hdmi_buffer_prepare,
 	.buf_queue		= hdmi_buffer_queue,
 	.start_streaming	= hdmi_start_streaming,

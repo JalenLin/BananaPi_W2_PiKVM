@@ -1,0 +1,8 @@
+# ustreamer's Janus plugin: WebRTC from ustreamer's H.264 sink.
+#
+# Replaces PiKVM V4's version, which also captures audio from a TC358743
+# (acap), plays audio to the target (aplay) and feeds a webcam (vplay). This
+# board has no ALSA device for the HDMI input's audio yet, so video only.
+video: {
+	sink = "kvmd::ustreamer::h264"
+}

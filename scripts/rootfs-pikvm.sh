@@ -16,8 +16,8 @@ set -euo pipefail
 SRC=/tmp/src
 BUILD=/tmp/pikvm-build
 
-[ -d "$SRC/kvmd" ] && [ -d "$SRC/ustreamer" ] || {
-    echo "$SRC/{kvmd,ustreamer} not found -- run make sources first" >&2
+[ -d "$SRC/kvmd" ] && [ -d "$SRC/ustreamer" ] && [ -d "$SRC/janus-gateway" ] || {
+    echo "$SRC/{kvmd,ustreamer,janus-gateway} not found -- run make sources first" >&2
     exit 1
 }
 
@@ -40,17 +40,49 @@ retry() {
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
-cp -a "$SRC/ustreamer" "$SRC/kvmd" "$BUILD/"
+cp -a "$SRC/ustreamer" "$SRC/kvmd" "$SRC/janus-gateway" "$BUILD/"
+
+# ─────────────────────────────────────────────────────────────────────
+# Janus, the WebRTC gateway kvmd-janus runs -- configured as PiKVM's
+# janus-gateway-pikvm PKGBUILD does: the websockets transport only, no
+# plugins of its own (ustreamer brings the one that matters).
+# ─────────────────────────────────────────────────────────────────────
+echo ">>> building janus"
+cd "$BUILD/janus-gateway"
+# With a .git directory, src/Makefile asks git for the version hash, and git
+# is not installed here; without one it writes "not-a-git-repo".
+rm -rf .git
+retry ./autogen.sh
+retry ./configure \
+    --prefix=/usr \
+    --sysconfdir=/etc \
+    --disable-docs \
+    --disable-data-channels \
+    --disable-turn-rest-api \
+    --disable-all-plugins \
+    --disable-all-loggers \
+    --disable-all-transports \
+    --enable-websockets \
+    --disable-sample-event-handler \
+    --disable-websockets-event-handler \
+    --disable-gelf-event-handler
+retry make -j"$(nproc)"
+retry make install
+mkdir -p /usr/lib/janus/loggers
+install -Dm644 adapter.js /usr/share/janus/javascript/adapter.js
+cd /
 
 # ─────────────────────────────────────────────────────────────────────
 # ustreamer
 # ─────────────────────────────────────────────────────────────────────
 # WITH_PYTHON=1 also builds the memsink module kvmd imports.
-# No WITH_JANUS: the kvmd-media / janus (WebRTC) path is not enabled here.
+# WITH_JANUS=1 builds the Janus plugin that serves the H.264 sink (and audio)
+# over WebRTC.
 # No WITH_GPIO: there are no GPIO indicator LEDs wired.
 echo ">>> building ustreamer"
-retry make -C "$BUILD/ustreamer" -j"$(nproc)" WITH_PYTHON=1 PREFIX=/usr
-retry make -C "$BUILD/ustreamer" WITH_PYTHON=1 PREFIX=/usr install-strip
+retry make -C "$BUILD/ustreamer" -j"$(nproc)" WITH_PYTHON=1 WITH_JANUS=1 PREFIX=/usr
+retry make -C "$BUILD/ustreamer" WITH_PYTHON=1 WITH_JANUS=1 PREFIX=/usr install-strip
+ls /usr/lib/ustreamer/janus/libjanus_ustreamer.so
 
 ustreamer --version
 python3 -c "import ustreamer; print('ustreamer python module:', ustreamer.__file__)"
@@ -142,6 +174,9 @@ rm -f /etc/ssh/ssh_host_*
 # Debian's nginx.service would occupy port 80 and clash with kvmd-nginx.
 systemctl disable nginx.service
 # kvmd-otg creates the USB gadget (keyboard + mouse) before kvmd starts.
-systemctl enable kvmd.service kvmd-nginx.service kvmd-otg.service
+# kvmd-media (direct H.264) and kvmd-janus (WebRTC) read ustreamer's H.264
+# sink; with the BSP kernel there is none, and they just wait.
+systemctl enable kvmd.service kvmd-nginx.service kvmd-otg.service \
+    kvmd-media.service kvmd-janus.service
 
 echo ">>> PiKVM userspace installed"

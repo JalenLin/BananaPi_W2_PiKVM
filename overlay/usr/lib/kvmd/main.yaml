@@ -53,15 +53,20 @@ kvmd:
         type: otg
 
     streamer:
+        # H.264 for WebRTC (kvmd-janus) and the direct H.264 mode
+        # (kvmd-media), in kbit/s.
+        h264_bitrate:
+            default: 5000
         cmd:
             - "/usr/bin/ustreamer"
             - "--device=/dev/kvmd-video"
             - "--persistent"
-            # rtk_hdmirx only emits NV16 / NV12 / BGR32, none of which
-            # ustreamer supports natively as a packed format. NV16 is the
-            # smallest of them that does not lose vertical chroma resolution
-            # (it needs our semi-planar patch to ustreamer).
-            - "--format=NV16"
+            # rtk_hdmirx emits NV16 / NV12 / BGR32, none of which ustreamer
+            # supports natively (our semi-planar patch to ustreamer adds
+            # them). NV12 because the H.264 encoder only takes 4:2:0; the
+            # JPEG path loses vertical chroma resolution with it, which is
+            # not visible on a desktop.
+            - "--format=NV12"
             # Follow the source's resolution. The mainline driver
             # (kernel-6.18 branch) implements VIDIOC_QUERY_DV_TIMINGS and
             # returns ENOLINK without a signal, which ustreamer shows as "no
@@ -71,10 +76,9 @@ kvmd:
             # 1080p60 (check with hdmirx-info).
             - "--dv-timings"
             - "--resolution=1920x1080"
-            # Encoding is on the CPU: none of the SoC's codec engines exposes
-            # a V4L2 M2M interface (the BSP provides vendor ioctls instead).
-            # 3 is the measured optimum -- a 4th worker fights the capture and
-            # HTTP threads and costs about 10%. See section 10 of
+            # JPEG is encoded on the CPU: the SoC's JPEG engine has no V4L2
+            # driver. 3 is the measured optimum -- a 4th worker fights the
+            # capture and HTTP threads and costs about 10%. See section 10 of
             # docs/06-changes.md for the survey of the hardware encoders.
             - "--workers=3"
             - "--quality={quality}"
@@ -96,6 +100,15 @@ kvmd:
             - "--process-name-prefix={process_name_prefix}"
             - "--notify-parent"
             - "--no-log-colors"
+            # H.264 from VE1, the CODA980, through the mainline coda driver
+            # (docs/09-mainline-bringup.md, section 11). Captured frames go to
+            # it as DMA-BUFs. The BSP 4.9 kernel has no such device; its
+            # image removes these again (/etc/kvmd/override.d/).
+            - "--h264-sink=kvmd::ustreamer::h264"
+            - "--h264-sink-mode=0660"
+            - "--h264-bitrate={h264_bitrate}"
+            - "--h264-gop={h264_gop}"
+            - "--h264-m2m-device=/dev/kvmd-h264"
 
 
 otg:
@@ -114,3 +127,11 @@ otg:
     # has no no_out_endpoint, so each HID function there also takes an OUT;
     # 2 is right for that kernel too.
     endpoints: 3
+
+
+# Readers of the H.264 sink: kvmd-media (direct H.264 over a websocket) and
+# Janus's ustreamer plugin (WebRTC), as on PiKVM V4.
+media:
+    memsink:
+        h264:
+            sink: "kvmd::ustreamer::h264"
