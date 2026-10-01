@@ -157,6 +157,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M4** | kvmd + ustreamer on 6.18 | **done** 2026-10-01: kvmd starts ustreamer on demand, keyboard input reaches the target and shows up in the capture -- see §10 |
 | **M5** | hdmirx port | **done** 2026-10-01: 1080p60 captured, 60 fps from the driver, ~22 fps of JPEG to a client (the BSP's figure) -- see §10 |
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
+| **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M | **done** 2026-10-01: 1080p H.264 from the HDMI capture through ustreamer -- see §11. WebRTC (Janus) not yet |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1424,7 +1425,84 @@ come up the first time too, because `firstboot-done` was already there on
 the second boot. The silence was on the console path, not a hang, and is
 put down to the card slot and serial capture rather than the image.
 
-## 11. Sources
+## 11. H.264: VE1, the CODA980
+
+PiKVM sends audio only over WebRTC, and its WebRTC video is H.264, so H.264
+comes first. The SoC has two Chips&Media video engines at `0x98040000`. VE1
+is a **CODA980**: the product code at `+0x1044` reads `0x9800`. VE2, at
+`+0x4000`, is a WAVE410 HEVC decoder and is not used. Mainline already has a
+driver for the CODA9 family, `coda`, written for the i.MX6's CODA960. That
+driver now runs VE1 as a V4L2 mem2mem H.264 encoder
+(`patches/linux-mainline/0012`, `CONFIG_VIDEO_CODA=m`, the `vpu` node in the
+DTS, `/dev/kvmd-h264` from the udev rule).
+
+### Waking it up
+
+With the clock, SRAM power domain, reset and isolation all set exactly as the
+BSP sets them, every core register still read `0xdeadbeef`, and SB2 logged an
+invalid access. The way through was bisecting on the BSP kernel itself: it
+booted from an initramfs with `root=/dev/ram` and the DRD-disabled DTB, and a
+test module repeated the BSP's steps one at a time. Its own `power_control`
+and `clk` calls still gave `0xdeadbeef`. Only the ioctl path woke the core,
+and that path ends in `ve1_wrapper_setup()`. That function turns on the
+Realtek wrapper's command interface: `VE_CTRL` (`+0x3000`) bit 1, and the CTI
+command depth (`+0x3004` bits 29:24 = `0x1a`, "for 1296 timing issue").
+After those two writes, the core answers.
+
+**Do not dump the SB2 block blindly.** `0x9801a000`-`0x9801a01f` and
+`0x9801a620`-`0x9801a63c` are hardware semaphores, and a read acquires them.
+Write 0 to release one taken by accident.
+
+### What differs from a CODA960
+
+The firmware is Realtek's `ve1.bin` from BPI's Android 7 tree. It holds the
+BIT processor's code words as hex text. `scripts/fetch-vpu-firmware.sh`
+downloads it from a pinned commit, checks its hash and converts it. The blob
+is not in the repo; `make image-mainline` fetches it into the image. The
+firmware reports product `0xe428`, version 3.0.1.
+
+Each item below was found by comparing against Realtek's BSP driver or by
+disassembling `libvpu.so` (32-bit ARM, with symbols) from the same Android
+tree:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Encoded fine, but the SPS was High profile with a 10-bit luma depth | The header command reads CABAC, 8x8, chroma format, field and profile parameters at `0x194`-`0x1a8`, which still held SEQ_INIT's frame rate, GOP size and so on | Zero `0x180`-`0x1fc` before each command's parameters |
+| Every pixel of every frame was the frame's first pixel | `FRAME_MEM_CTRL` bits 12:9 are the frame map type on the CODA980. The CODA960 BWB bit (12) selected a tiled field map | BWB is bit 15 there (`Coda9VpuEncSetup`) |
+| Writing the GDI tables made it worse | The CODA980 has GDI 2.0: `0x1800`/`0x1880`/`0x1900` are x/y-to-AXI maps and a config register, not GDI 1.0's tables | Leave the GDI alone for linear frames, as libvpu does. No tiled maps |
+| The second encoding session hung in SEQ_INIT (BIT busy, PC `0x100`) | `coda_hw_reset()` runs after every SEQ_END on a CODA960. It stops the GDI bus, then calls `reset_control_reset()`, which our `snps,dw-low-reset` controller does not implement. The reset returned early, leaving the bus stopped | Assert/deassert, then redo the wrapper |
+| 1080p came out 1088 lines tall | The SPS crop flag is bit 2 on the CODA980, not 3 (`GetEncHeader`) | |
+| | No subsampled ME frames (their registers are the slice buffer there); a 470 KiB temp buffer (`coda9_vpuconfig.h`); no JPEG engine; no IRAM | |
+| ustreamer's forced keyframe failed with EINVAL | `coda_s_ctrl()` handles `FORCE_KEY_FRAME`, but the control was never created | Create it |
+
+Only the H.264 encoder is registered, because nothing else has been tried.
+
+### ustreamer
+
+ustreamer's M2M encoder only knew the multi-planar API of the Pi's
+bcm2835-codec, and coda is single-planar. `patches/ustreamer/0002` picks the
+API from `VIDIOC_QUERYCAP`. It also makes controls optional where not every
+encoder has them: coda has `GOP_SIZE` instead of `H264_I_PERIOD`, and has no
+`REPEAT_SEQ_HEADER` or `H264_MIN_QP`. coda only takes 4:2:0 input
+(NV12/YU12/YV12), so the capture format has to be NV12 rather than NV16. The
+receiver starts NV12's chroma plane after 1088 lines, so ustreamer gives the
+encoder a 1088-line buffer and crops it to 1080 with `VIDIOC_S_SELECTION`.
+The capture buffers go to the encoder as DMA-BUFs, with no copy.
+
+### Verified on hardware, 2026-10-01
+
+- Test patterns: a striped frame and a moving gradient decode back
+  pixel-exact (ffmpeg, on the PC).
+- `v4l2-ctl`, 40 frames of captured 1080p NV12: 0.7 s, including setup.
+- ustreamer: HDMI (Kodi on a Pi) to NV12 to DMA-BUF to VE1 to the H.264
+  sink. 1920x1080, 30 fps (ustreamer's own limit above 720p). The CPU is 92%
+  idle. The stream decodes cleanly as 1920x1080.
+- Encoder sessions opened back to back keep working.
+
+Still to do: kvmd's WebRTC path (Janus and ustreamer's Janus plugin), and
+then audio.
+
+## 12. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -1437,3 +1515,5 @@ put down to the card slot and serial capture rather than the image.
 | `Fireblossom/wd-mch-kernel` @ `947374d` (`linux-6.18.40/drivers/net/ethernet/realtek/r8169soc.c`) | The 6.18 port of Realtek's `r8169soc.c` that M2 starts from |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_chip.c` | Where the chip revision lives |
 | `vendor/bpi-w2-bsp/u-boot-rtk/include/configs/rtd1295_common.h` | `CONFIG_ETHADDR`, the MAC every board shares |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_ve/ve1/ve1.c` | VE1 power-on and the wrapper setup |
+| `BPI-SINOVOIP/BPI-1296-Android7` @ `d377aa6` | `ve1.bin`; `libvpu.so` and the `vpuapi` headers (CODA980 register use) |

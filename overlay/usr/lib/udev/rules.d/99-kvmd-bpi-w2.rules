@@ -15,3 +15,9 @@ SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", \
 # endpoints.
 KERNEL=="hidg0", GROUP="kvmd", SYMLINK+="kvmd-hid-keyboard"
 KERNEL=="hidg1", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse"
+
+# VE1, the CODA980 H.264 encoder (mainline kernel, coda driver). Its node
+# number depends on probe order as well; ustreamer is pointed at this name
+# with --h264-m2m-device. kvmd runs ustreamer as the kvmd user.
+SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", ATTR{name}=="coda-video-encoder", \
+    SYMLINK+="kvmd-h264", GROUP="kvmd", MODE="0660"

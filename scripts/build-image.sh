@@ -102,6 +102,8 @@ if [ "$FLAVOUR" = "mainline" ]; then
              INSTALL_MOD_PATH=/work/build/modules-mainline INSTALL_MOD_STRIP=1 \
              modules_install'
     ls "$BUILD/modules-mainline/lib/modules"
+    # VE1's firmware for the coda driver (H.264), downloaded, not shipped
+    "$PROJECT_ROOT/scripts/fetch-vpu-firmware.sh" "$BUILD/firmware-mainline"
 fi
 cp "$KDTB" "$L/bpi-w2.dtb"
 cp "$L/bpi-w2.dtb" "$L/rtd-1296-bananapi-w2-2GB.dtb"
@@ -167,6 +169,8 @@ if [ -d /b/modules-mainline/lib/modules ] && [ $FLAVOUR = mainline ]; then
     # must stay root-owned (see the uid check in build-rootfs.sh).
     rm -rf /b/rootfs/usr/lib/modules/*
     cp -r /b/modules-mainline/lib/modules/. /b/rootfs/usr/lib/modules/
+    mkdir -p /b/rootfs/usr/lib/firmware
+    cp /b/firmware-mainline/* /b/rootfs/usr/lib/firmware/
 fi
 P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))
 truncate -s \$(( P2_SECTORS * 512 )) /b/p2.img

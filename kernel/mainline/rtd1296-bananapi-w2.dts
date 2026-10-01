@@ -359,6 +359,25 @@
 	};
 
 	/*
+	 * VE1: a Chips&Media CODA980 (product code 0x9800 at +0x1044), the
+	 * H.264 encoder ustreamer uses through the mainline coda driver. VE2,
+	 * a WAVE410 decoder at +0x4000, is left alone. Only the clock gate and
+	 * reset come through the clock and reset drivers; the SRAM power domain
+	 * and isolation are CRT registers the driver writes through the syscon.
+	 * From the BSP's rtd-1296.dtsi (ve1@98040000).
+	 */
+	vpu: video-codec@40000 {
+		compatible = "realtek,rtd1295-vpu";
+		reg = <0x40000 0x4000>;
+		interrupts = <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "bit";
+		clocks = <&crt_clk 12>, <&crt_clk 12>;	/* CLK_EN1 12: VE1 */
+		clock-names = "per", "ahb";
+		resets = <&reset1 RTD1295_RSTN_VE1>;
+		realtek,crt = <&crt>;
+	};
+
+	/*
 	 * Port 0: the Type-C connector, as a USB device. It is how PiKVM
 	 * presents its keyboard, mouse and mass storage to the target (kvmd-otg
 	 * builds the gadget through configfs), so it is pinned to peripheral.

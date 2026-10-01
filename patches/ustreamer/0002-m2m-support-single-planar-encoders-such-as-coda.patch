@@ -1,0 +1,404 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] m2m: support single-planar encoders, such as coda
+
+The M2M encoder only spoke the multi-planar API of the Raspberry Pi's
+bcm2835-codec. The mainline coda driver, which runs the RTD1296's CODA980
+H.264 encoder on the BPI-W2, is single-planar. Pick the API from
+VIDIOC_QUERYCAP and use struct v4l2_pix_format and plain buffers for it.
+
+Also:
+- Capture hardware that aligns the plane height (1080 to 1088) starts the
+  chroma plane after the padding rows. On the single-planar path, give the
+  encoder the aligned height and crop back to the real one with
+  VIDIOC_S_SELECTION, so the SPS carries frame cropping.
+- Treat controls that not every encoder has as optional: coda has GOP_SIZE
+  instead of H264_I_PERIOD, no REPEAT_SEQ_HEADER (it puts SPS/PPS before
+  every IDR anyway) and, being a CODA960 family member, no H264_MIN_QP.
+
+diff --git a/src/ustreamer/m2m.c b/src/ustreamer/m2m.c
+index d0b08ae..3b77245 100644
+--- a/src/ustreamer/m2m.c
++++ b/src/ustreamer/m2m.c
+@@ -62,6 +62,8 @@ static int _m2m_encoder_init_buffers(
+ 
+ static void _m2m_encoder_cleanup(us_m2m_encoder_s *enc);
+ 
++static uint _m2m_buf_height(const us_frame_s *frame);
++
+ static int _m2m_encoder_compress_raw(
+ 	us_m2m_encoder_s *enc,
+ 	const us_frame_s *src,
+@@ -192,6 +194,32 @@ static us_m2m_encoder_s *_m2m_encoder_init(
+ 		} \
+ 	}
+ 
++#define _IN_TYPE(x_run)		((x_run)->mplane ? V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE : V4L2_BUF_TYPE_VIDEO_OUTPUT)
++#define _OUT_TYPE(x_run)	((x_run)->mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE)
++
++static uint _m2m_buf_height(const us_frame_s *frame) {
++	// Capture hardware that aligns the plane height (1080 lines rounded up to
++	// 1088) starts the chroma plane after the padding rows, so the encoder has
++	// to be told the aligned height, and cropped back to the real one.
++	const uint aligned = (frame->height + 15) & ~15U;
++	uz size = 0;
++	switch (frame->format) {
++		case V4L2_PIX_FMT_NV12:
++		case V4L2_PIX_FMT_NV21:
++		case V4L2_PIX_FMT_YUV420:
++		case V4L2_PIX_FMT_YVU420:
++			size = (uz)frame->stride * aligned * 3 / 2;
++			break;
++		case V4L2_PIX_FMT_NV16:
++			size = (uz)frame->stride * aligned * 2;
++			break;
++	}
++	if (aligned != frame->height && size > 0 && frame->used >= size) {
++		return aligned;
++	}
++	return frame->height;
++}
++
+ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame) {
+ 	us_m2m_encoder_runtime_s *const run = enc->run;
+ 
+@@ -230,6 +258,23 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 	}
+ 	_LOG_DEBUG("Encoder device fd=%d opened", run->fd);
+ 
++	{
++		struct v4l2_capability cap = {0};
++		_E_XIOCTL(VIDIOC_QUERYCAP, &cap, "Can't query encoder capabilities");
++		const u32 caps = ((cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps : cap.capabilities);
++		if (caps & V4L2_CAP_VIDEO_M2M_MPLANE) {
++			run->mplane = true;
++		} else if (caps & V4L2_CAP_VIDEO_M2M) {
++			run->mplane = false;
++		} else {
++			_LOG_ERROR("The encoder is not a V4L2 M2M device");
++			goto error;
++		}
++		run->p_buf_height = (run->mplane ? run->p_height : _m2m_buf_height(frame));
++		_LOG_INFO("Using %s-planar M2M API, %s; buffer height=%u",
++			(run->mplane ? "multi" : "single"), cap.driver, run->p_buf_height);
++	}
++
+ #	define SET_OPTION(x_cid, x_value) { \
+ 			struct v4l2_control m_ctl = {0}; \
+ 			m_ctl.id = x_cid; \
+@@ -237,9 +282,23 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 			_LOG_DEBUG("Configuring option " #x_cid " ..."); \
+ 			_E_XIOCTL(VIDIOC_S_CTRL, &m_ctl, "Can't set option " #x_cid); \
+ 		}
++	// Controls that only some encoders have; the result tells whether it was set
++#	define TRY_OPTION(x_cid, x_value) ({ \
++			struct v4l2_control m_ctl = {0}; \
++			m_ctl.id = x_cid; \
++			m_ctl.value = x_value; \
++			_LOG_DEBUG("Configuring optional " #x_cid " ..."); \
++			const bool m_ok = (us_xioctl(run->fd, VIDIOC_S_CTRL, &m_ctl) == 0); \
++			if (!m_ok) { \
++				_LOG_VERBOSE("Optional " #x_cid " is not supported"); \
++			} \
++			m_ok; \
++		})
+ 	if (enc->out_format == V4L2_PIX_FMT_H264) {
+ 		SET_OPTION(V4L2_CID_MPEG_VIDEO_BITRATE,				enc->bitrate);
+-		SET_OPTION(V4L2_CID_MPEG_VIDEO_H264_I_PERIOD,		enc->gop);
++		if (!TRY_OPTION(V4L2_CID_MPEG_VIDEO_H264_I_PERIOD,	enc->gop)) {
++			SET_OPTION(V4L2_CID_MPEG_VIDEO_GOP_SIZE,		enc->gop);
++		}
+ 		SET_OPTION(V4L2_CID_MPEG_VIDEO_H264_PROFILE,		V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE);
+ 		if (run->p_width * run->p_height <= 1920 * 1080) { // https://forums.raspberrypi.com/viewtopic.php?t=291447#p1762296
+ 			if (enc->boost) {
+@@ -250,17 +309,21 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 		} else {
+ 			SET_OPTION(V4L2_CID_MPEG_VIDEO_H264_LEVEL,		V4L2_MPEG_VIDEO_H264_LEVEL_5_1);
+ 		}
+-		SET_OPTION(V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER,	1);
+-		SET_OPTION(V4L2_CID_MPEG_VIDEO_H264_MIN_QP,			16);
+-		SET_OPTION(V4L2_CID_MPEG_VIDEO_H264_MAX_QP,			32);
++		// Without it the encoder has to put SPS/PPS before every IDR on its own
++		// (coda does)
++		(void)TRY_OPTION(V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER,	1);
++		// Not on every encoder either: the CODA960 family has no minimum
++		(void)TRY_OPTION(V4L2_CID_MPEG_VIDEO_H264_MIN_QP,	16);
++		(void)TRY_OPTION(V4L2_CID_MPEG_VIDEO_H264_MAX_QP,	32);
+ 	} else if (enc->out_format == V4L2_PIX_FMT_MJPEG) {
+ 		SET_OPTION(V4L2_CID_MPEG_VIDEO_BITRATE,				enc->bitrate);
+ 	} else if (enc->out_format == V4L2_PIX_FMT_JPEG) {
+ 		SET_OPTION(V4L2_CID_JPEG_COMPRESSION_QUALITY,		enc->quality);
+ 	}
++#	undef TRY_OPTION
+ #	undef SET_OPTION
+ 
+-	{
++	if (run->mplane) {
+ 		struct v4l2_format fmt = {0};
+ 		fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+ 		fmt.fmt.pix_mp.width = run->p_width;
+@@ -272,26 +335,53 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = run->p_stride;
+ 		_LOG_DEBUG("Configuring INPUT format ...");
+ 		_E_XIOCTL(VIDIOC_S_FMT, &fmt, "Can't set INPUT format");
++	} else {
++		struct v4l2_format fmt = {0};
++		fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
++		fmt.fmt.pix.width = run->p_width;
++		fmt.fmt.pix.height = run->p_buf_height;
++		fmt.fmt.pix.pixelformat = run->p_in_format;
++		fmt.fmt.pix.field = V4L2_FIELD_NONE;
++		fmt.fmt.pix.colorspace = V4L2_COLORSPACE_JPEG; // FIXME: Wrong colors
++		_LOG_DEBUG("Configuring INPUT format ...");
++		_E_XIOCTL(VIDIOC_S_FMT, &fmt, "Can't set INPUT format");
++		if (fmt.fmt.pix.pixelformat != run->p_in_format) {
++			char fourcc_str[8];
++			_LOG_ERROR("The INPUT format can't be configured as %s",
++				us_fourcc_to_string(run->p_in_format, fourcc_str, 8));
++			goto error;
++		}
+ 	}
+ 
+ 	{
+ 		struct v4l2_format fmt = {0};
+-		fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+-		fmt.fmt.pix_mp.width = run->p_width;
+-		fmt.fmt.pix_mp.height = run->p_height;
+-		fmt.fmt.pix_mp.pixelformat = enc->out_format;
+-		fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+-		fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
+-		fmt.fmt.pix_mp.num_planes = 1;
+-		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
+-		if (enc->out_format == V4L2_PIX_FMT_H264) {
+-			// https://github.com/pikvm/ustreamer/issues/169
+-			// https://github.com/raspberrypi/linux/pull/5232
+-			fmt.fmt.pix_mp.plane_fmt[0].sizeimage = (1024 + 512) << 10; // 1.5Mb
++		fmt.type = _OUT_TYPE(run);
++		if (run->mplane) {
++			fmt.fmt.pix_mp.width = run->p_width;
++			fmt.fmt.pix_mp.height = run->p_height;
++			fmt.fmt.pix_mp.pixelformat = enc->out_format;
++			fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
++			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
++			fmt.fmt.pix_mp.num_planes = 1;
++			// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
++			if (enc->out_format == V4L2_PIX_FMT_H264) {
++				// https://github.com/pikvm/ustreamer/issues/169
++				// https://github.com/raspberrypi/linux/pull/5232
++				fmt.fmt.pix_mp.plane_fmt[0].sizeimage = (1024 + 512) << 10; // 1.5Mb
++			}
++		} else {
++			fmt.fmt.pix.width = run->p_width;
++			fmt.fmt.pix.height = run->p_buf_height;
++			fmt.fmt.pix.pixelformat = enc->out_format;
++			fmt.fmt.pix.field = V4L2_FIELD_NONE;
++			if (enc->out_format == V4L2_PIX_FMT_H264) {
++				fmt.fmt.pix.sizeimage = (1024 + 512) << 10; // 1.5Mb, as above
++			}
+ 		}
+ 		_LOG_DEBUG("Configuring OUTPUT format ...");
+ 		_E_XIOCTL(VIDIOC_S_FMT, &fmt, "Can't set OUTPUT format");
+-		if (fmt.fmt.pix_mp.pixelformat != enc->out_format) {
++		const uint got_format = (run->mplane ? fmt.fmt.pix_mp.pixelformat : fmt.fmt.pix.pixelformat);
++		if (got_format != enc->out_format) {
+ 			char fourcc_str[8];
+ 			_LOG_ERROR("The OUTPUT format can't be configured as %s",
+ 				us_fourcc_to_string(enc->out_format, fourcc_str, 8));
+@@ -300,6 +390,17 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 		}
+ 	}
+ 
++	if (run->p_buf_height != run->p_height) {
++		// The SPS then carries frame cropping, and players show the real height
++		struct v4l2_selection sel = {0};
++		sel.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
++		sel.target = V4L2_SEL_TGT_CROP;
++		sel.r.width = run->p_width;
++		sel.r.height = run->p_height;
++		_LOG_DEBUG("Cropping INPUT to %ux%u ...", run->p_width, run->p_height);
++		_E_XIOCTL(VIDIOC_S_SELECTION, &sel, "Can't crop INPUT");
++	}
++
+ 	if (
+ 		(run->p_width * run->p_height <= 1280 * 720)
+ 		|| ((enc->out_format == V4L2_PIX_FMT_H264) && enc->boost)
+@@ -317,7 +418,7 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 	// JPEG: То же самое про 30 or 0, но еще даже не проверено на низких разрешениях.
+ 	{
+ 		struct v4l2_streamparm setfps = {0};
+-		setfps.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
++		setfps.type = _IN_TYPE(run);
+ 		setfps.parm.output.timeperframe.numerator = 1;
+ 		setfps.parm.output.timeperframe.denominator = run->fps_limit;
+ 		_LOG_DEBUG("Configuring INPUT FPS ...");
+@@ -327,7 +428,7 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 	if (_m2m_encoder_init_buffers(
+ 		enc,
+ 		(dma ? "INPUT-DMA" : "INPUT"),
+-		V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
++		_IN_TYPE(run),
+ 		&run->in_bufs,
+ 		&run->n_in_bufs,
+ 		dma
+@@ -337,7 +438,7 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 	if (_m2m_encoder_init_buffers(
+ 		enc,
+ 		"OUTPUT",
+-		V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
++		_OUT_TYPE(run),
+ 		&run->out_bufs,
+ 		&run->n_out_bufs,
+ 		false
+@@ -346,11 +447,11 @@ static void _m2m_encoder_ensure(us_m2m_encoder_s *enc, const us_frame_s *frame)
+ 	}
+ 
+ 	{
+-		enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
++		enum v4l2_buf_type type = _IN_TYPE(run);
+ 		_LOG_DEBUG("Starting INPUT ...");
+ 		_E_XIOCTL(VIDIOC_STREAMON, &type, "Can't start INPUT");
+ 
+-		type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
++		type = _OUT_TYPE(run);
+ 		_LOG_DEBUG("Starting OUTPUT ...");
+ 		_E_XIOCTL(VIDIOC_STREAMON, &type, "Can't start OUTPUT");
+ 	}
+@@ -401,23 +502,28 @@ static int _m2m_encoder_init_buffers(
+ 		buf.type = type;
+ 		buf.memory = V4L2_MEMORY_MMAP;
+ 		buf.index = *n_bufs_ptr;
+-		buf.length = 1;
+-		buf.m.planes = &plane;
++		if (run->mplane) {
++			buf.length = 1;
++			buf.m.planes = &plane;
++		}
+ 
+ 		_LOG_DEBUG("Querying %s buffer=%u ...", name, *n_bufs_ptr);
+ 		_E_XIOCTL(VIDIOC_QUERYBUF, &buf, "Can't query %s buffer=%u", name, *n_bufs_ptr);
+ 
++		const uz length = (run->mplane ? plane.length : buf.length);
++		const off_t offset = (run->mplane ? plane.m.mem_offset : buf.m.offset);
++
+ 		_LOG_DEBUG("Mapping %s buffer=%u ...", name, *n_bufs_ptr);
+ 		if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
+-			NULL, plane.length,
++			NULL, length,
+ 			PROT_READ | PROT_WRITE, MAP_SHARED,
+-			run->fd, plane.m.mem_offset
++			run->fd, offset
+ 		)) == MAP_FAILED) {
+ 			_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
+ 			goto error;
+ 		}
+ 		US_A((*bufs_ptr)[*n_bufs_ptr].data != NULL);
+-		(*bufs_ptr)[*n_bufs_ptr].allocated = plane.length;
++		(*bufs_ptr)[*n_bufs_ptr].allocated = length;
+ 
+ 		_LOG_DEBUG("Queuing %s buffer=%u ...", name, *n_bufs_ptr);
+ 		_E_XIOCTL(VIDIOC_QBUF, &buf, "Can't queue %s buffer=%u", name, *n_bufs_ptr);
+@@ -443,8 +549,8 @@ static void _m2m_encoder_cleanup(us_m2m_encoder_s *enc) {
+ 					_LOG_PERROR("Can't stop %s", x_name); \
+ 				} \
+ 			}
+-		STOP_STREAM("OUTPUT", V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+-		STOP_STREAM("INPUT", V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
++		STOP_STREAM("OUTPUT", _OUT_TYPE(run));
++		STOP_STREAM("INPUT", _IN_TYPE(run));
+ #		undef STOP_STREAM
+ 	}
+ 
+@@ -503,15 +609,21 @@ static int _m2m_encoder_compress_raw(
+ 
+ 	struct v4l2_buffer in_buf = {0};
+ 	struct v4l2_plane in_plane = {0};
+-	in_buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+-	in_buf.length = 1;
+-	in_buf.m.planes = &in_plane;
++	in_buf.type = _IN_TYPE(run);
++	if (run->mplane) {
++		in_buf.length = 1;
++		in_buf.m.planes = &in_plane;
++	}
+ 
+ 	if (run->p_dma) {
+ 		in_buf.index = 0;
+ 		in_buf.memory = V4L2_MEMORY_DMABUF;
+ 		in_buf.field = V4L2_FIELD_NONE;
+-		in_plane.m.fd = src->dma_fd;
++		if (run->mplane) {
++			in_plane.m.fd = src->dma_fd;
++		} else {
++			in_buf.m.fd = src->dma_fd;
++		}
+ 		_LOG_DEBUG("Using INPUT-DMA buffer=%u", in_buf.index);
+ 	} else {
+ 		in_buf.memory = V4L2_MEMORY_MMAP;
+@@ -533,8 +645,15 @@ static int _m2m_encoder_compress_raw(
+ 
+ 	in_buf.timestamp.tv_sec = ts.tv_sec;
+ 	in_buf.timestamp.tv_usec = ts.tv_usec;
+-	in_plane.bytesused = src->used;
+-	in_plane.length = src->used;
++	if (run->mplane) {
++		in_plane.bytesused = src->used;
++		in_plane.length = src->used;
++	} else {
++		in_buf.bytesused = src->used;
++		if (run->p_dma) {
++			in_buf.length = src->used;
++		}
++	}
+ 	if (!run->p_dma) {
+ 		memcpy(run->in_bufs[in_buf.index].data, src->data, src->used);
+ 	}
+@@ -574,10 +693,12 @@ static int _m2m_encoder_compress_raw(
+ 
+ 			struct v4l2_buffer out_buf = {0};
+ 			struct v4l2_plane out_plane = {0};
+-			out_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
++			out_buf.type = _OUT_TYPE(run);
+ 			out_buf.memory = V4L2_MEMORY_MMAP;
+-			out_buf.length = 1;
+-			out_buf.m.planes = &out_plane;
++			if (run->mplane) {
++				out_buf.length = 1;
++				out_buf.m.planes = &out_plane;
++			}
+ 			_LOG_DEBUG("Fetching OUTPUT buffer ...");
+ 			_E_XIOCTL(VIDIOC_DQBUF, &out_buf, "Can't fetch OUTPUT buffer");
+ 
+@@ -588,7 +709,8 @@ static int _m2m_encoder_compress_raw(
+ 				// входному (с тем же таймстампом).
+ 				_LOG_DEBUG("Need to retry OUTPUT buffer due timestamp mismatch");
+ 			} else {
+-				us_frame_set_data(dest, run->out_bufs[out_buf.index].data, out_plane.bytesused);
++				us_frame_set_data(dest, run->out_bufs[out_buf.index].data,
++					(run->mplane ? out_plane.bytesused : out_buf.bytesused));
+ 				dest->key = out_buf.flags & V4L2_BUF_FLAG_KEYFRAME;
+ 				dest->gop = enc->gop;
+ 				done = true;
+@@ -608,4 +730,6 @@ error: // Mostly for _E_XIOCTL
+ 	return -1;
+ }
+ 
++#undef _OUT_TYPE
++#undef _IN_TYPE
+ #undef _E_XIOCTL
+diff --git a/src/ustreamer/m2m.h b/src/ustreamer/m2m.h
+index 366eb45..862b86e 100644
+--- a/src/ustreamer/m2m.h
++++ b/src/ustreamer/m2m.h
+@@ -45,6 +45,13 @@ typedef struct {
+ 	uint	p_stride;
+ 	bool	p_dma;
+ 
++	// Single-planar M2M devices (the mainline coda driver, for one) take
++	// struct v4l2_pix_format and plain buffers instead of planes.
++	bool	mplane;
++	// The height of the INPUT buffers, which can be larger than p_height:
++	// capture hardware may start the chroma plane at an aligned height.
++	uint	p_buf_height;
++
+ 	bool	ready;
+ 	int		last_online;
+ 	ldf		last_encode_ts;
