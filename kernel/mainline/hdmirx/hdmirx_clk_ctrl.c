@@ -39,6 +39,12 @@
 #define  PLL_HDMI_TMDS_POW	BIT(3)
 #define PLL_HDMI_LDO1		0x230
 #define  PLL_HDMI_LDO1_EXT_LDO_LV	BIT(6)
+#define PLL_VODMA1		0x260	/* M, N, O, ... */
+#define  PLL_VODMA1_GOOD	0x0010c166	/* as a good boot left it */
+#define PLL_VODMA2		0x264
+#define  PLL_VODMA2_POW		BIT(0)
+#define  PLL_VODMA2_RSTB	BIT(1)
+#define  PLL_VODMA2_OEB		BIT(2)
 
 static struct reset_control *reset_mipi;
 static struct reset_control *reset_rxwrap;
@@ -47,6 +53,7 @@ static struct reset_control *reset_cbustx;
 static struct reset_control *reset_cbus_iso;
 static struct reset_control *reset_cbustx_iso;
 static struct reset_control *reset_cbusrx_iso;
+static struct reset_control *reset_disp;
 static struct clk *clk_mipi;
 static struct clk *clk_hdmirx;
 static struct clk *clk_cbustx;
@@ -78,15 +85,28 @@ static void sram_power_on(u32 mask)
 }
 
 /*
- * The receiver's PHY needs the HDMI PLL in CRT, which is the transmitter's
- * and which nothing on this kernel drives: the audio firmware and the boot
- * loader set it up, or not. The BSP u-boot on the SD card leaves it on;
- * BPI's eMMC u-boot leaves it off (PLL_HDMI 0x80, LDO1 bit 6 set), and then
- * the PHY's offset calibration times out on every lane ("Wait b lane koff
- * timeout") and nothing is ever decoded, although the TMDS clock is
- * measured fine. Measured on the board, both the power, reset and clock
- * bits and LDO1 bit 6 cleared are needed -- what the BSP's DP driver also
- * does before it uses this PLL (dptx_pixelpll_setting()).
+ * The receiver depends on two things of the display side that nothing on
+ * this kernel drives -- the boot loader and the audio firmware set them
+ * up, or not. The BSP u-boot on the SD card leaves both on; BPI's eMMC
+ * u-boot leaves both off:
+ *
+ *  - The HDMI PLL in CRT, the transmitter's (PLL_HDMI 0x80, LDO1 bit 6
+ *    set). Without it the PHY's offset calibration times out on every lane
+ *    ("Wait b lane koff timeout"). Both the power, reset and clock bits and
+ *    LDO1 bit 6 cleared are needed -- what the BSP's DP driver also does
+ *    before it uses this PLL (dptx_pixelpll_setting()).
+ *  - The display block's reset (RSTN_DISP). Held in reset, the receiver
+ *    calibrates and measures the TMDS clock, but never decodes a sync and
+ *    goes round "PLL Setting" for good.
+ *  - The VODMA PLL, the clock of the MIPI block that writes the frames to
+ *    memory (PLL_VODMA2 0x4: off, output disabled). Without it the MIPI
+ *    registers read 0xdeadbeef, timings are detected but no frame comes
+ *    ("CAP: Device select() timeout" in ustreamer). Set up as a good boot
+ *    left it.
+ *
+ * Found on the board by diffing CRT between a good and a bad boot and
+ * putting the good values back a few at a time. Both are only ever turned
+ * on here: the audio firmware drives the display side too.
  */
 static void hdmi_pll_on(void)
 {
@@ -103,6 +123,22 @@ static void hdmi_pll_on(void)
 	udelay(100);
 	writel(val | on, crt + PLL_HDMI);
 	pr_info("[HDMI RX]HDMI PLL was off (0x%08x), turned on\n", val);
+}
+
+static void vodma_pll_on(void)
+{
+	u32 val = readl(crt + PLL_VODMA2);
+
+	if ((val & (PLL_VODMA2_POW | PLL_VODMA2_RSTB | PLL_VODMA2_OEB)) ==
+	    (PLL_VODMA2_POW | PLL_VODMA2_RSTB))
+		return;
+	writel(PLL_VODMA1_GOOD, crt + PLL_VODMA1);
+	writel(PLL_VODMA2_POW | PLL_VODMA2_OEB, crt + PLL_VODMA2);
+	udelay(200);
+	writel(PLL_VODMA2_POW | PLL_VODMA2_RSTB | PLL_VODMA2_OEB, crt + PLL_VODMA2);
+	udelay(200);
+	writel(PLL_VODMA2_POW | PLL_VODMA2_RSTB, crt + PLL_VODMA2);
+	pr_info("[HDMI RX]VODMA PLL was off (0x%08x), turned on\n", val);
 }
 
 static void clk_on(struct clk *clk, HDMI_CLK_TYPE type)
@@ -122,6 +158,8 @@ void hdmirx_clock_control(HDMI_CLK_TYPE clk_type, HDMI_CLK_CTL enable)
 	if (clk_type & CLK_HDMIRX) {
 		if (enable) {
 			hdmi_pll_on();
+			vodma_pll_on();
+			reset_control_deassert(reset_disp);
 			reset_control_deassert(reset_hdmirx);
 			clk_on(clk_hdmirx, CLK_HDMIRX);
 			sram_power_on(SRAM_PWR2_HDMIRX);
@@ -210,6 +248,10 @@ int hdmirx_clock_init(struct platform_device *pdev)
 	GET_RESET(reset_cbus_iso, "cbus");
 	GET_RESET(reset_cbustx_iso, "cbustx");
 	GET_RESET(reset_cbusrx_iso, "cbusrx");
+	/* shared: never asserted from here (see hdmi_pll_on()) */
+	reset_disp = devm_reset_control_get_shared(dev, "disp");
+	if (IS_ERR(reset_disp))
+		return dev_err_probe(dev, PTR_ERR(reset_disp), "reset disp\n");
 
 	GET_CLK(clk_mipi, "mipi");
 	GET_CLK(clk_hdmirx, "hdmirx");

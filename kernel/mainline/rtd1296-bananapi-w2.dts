@@ -366,9 +366,10 @@
 			 <&reset2 RTD1295_RSTN_CBUS_TX>,
 			 <&iso_reset RTD1295_ISO_RSTN_CBUS>,
 			 <&iso_reset RTD1295_ISO_RSTN_CBUSTX>,
-			 <&iso_reset RTD1295_ISO_RSTN_CBUSRX>;
+			 <&iso_reset RTD1295_ISO_RSTN_CBUSRX>,
+			 <&reset4 RTD1295_RSTN_DISP>;	/* see hdmirx_clk_ctrl.c */
 		reset-names = "hdmirx", "hdmirx_wrap", "mipi", "cbus_tx",
-			      "cbus", "cbustx", "cbusrx";
+			      "cbus", "cbustx", "cbusrx", "disp";
 
 		/*
 		 * HPD: ISO GPIO 22, through an inverter. Source 5V is sensed
