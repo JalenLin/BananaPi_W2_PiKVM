@@ -20,6 +20,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -30,6 +31,14 @@
 #define SRAM_PWR2		0x368
 #define SRAM_PWR2_HDMIRX	GENMASK(14, 11)
 #define SRAM_PWR2_MIPI		BIT(8)
+
+#define PLL_HDMI		0x190
+#define  PLL_HDMI_CK_EN		BIT(0)
+#define  PLL_HDMI_PLL_POW	BIT(1)
+#define  PLL_HDMI_PLL_RSTB	BIT(2)
+#define  PLL_HDMI_TMDS_POW	BIT(3)
+#define PLL_HDMI_LDO1		0x230
+#define  PLL_HDMI_LDO1_EXT_LDO_LV	BIT(6)
 
 static struct reset_control *reset_mipi;
 static struct reset_control *reset_rxwrap;
@@ -68,6 +77,34 @@ static void sram_power_on(u32 mask)
 	writel(readl(crt + SRAM_PWR2) & ~mask, crt + SRAM_PWR2);
 }
 
+/*
+ * The receiver's PHY needs the HDMI PLL in CRT, which is the transmitter's
+ * and which nothing on this kernel drives: the audio firmware and the boot
+ * loader set it up, or not. The BSP u-boot on the SD card leaves it on;
+ * BPI's eMMC u-boot leaves it off (PLL_HDMI 0x80, LDO1 bit 6 set), and then
+ * the PHY's offset calibration times out on every lane ("Wait b lane koff
+ * timeout") and nothing is ever decoded, although the TMDS clock is
+ * measured fine. Measured on the board, both the power, reset and clock
+ * bits and LDO1 bit 6 cleared are needed -- what the BSP's DP driver also
+ * does before it uses this PLL (dptx_pixelpll_setting()).
+ */
+static void hdmi_pll_on(void)
+{
+	const u32 on = PLL_HDMI_CK_EN | PLL_HDMI_PLL_POW | PLL_HDMI_PLL_RSTB |
+		       PLL_HDMI_TMDS_POW;
+	u32 val;
+
+	writel(readl(crt + PLL_HDMI_LDO1) & ~PLL_HDMI_LDO1_EXT_LDO_LV,
+	       crt + PLL_HDMI_LDO1);
+	val = readl(crt + PLL_HDMI);
+	if ((val & on) == on)
+		return;
+	writel(val | PLL_HDMI_PLL_POW | PLL_HDMI_TMDS_POW, crt + PLL_HDMI);
+	udelay(100);
+	writel(val | on, crt + PLL_HDMI);
+	pr_info("[HDMI RX]HDMI PLL was off (0x%08x), turned on\n", val);
+}
+
 static void clk_on(struct clk *clk, HDMI_CLK_TYPE type)
 {
 	if (clk_prepare_enable(clk))
@@ -84,6 +121,7 @@ void hdmirx_clock_control(HDMI_CLK_TYPE clk_type, HDMI_CLK_CTL enable)
 
 	if (clk_type & CLK_HDMIRX) {
 		if (enable) {
+			hdmi_pll_on();
 			reset_control_deassert(reset_hdmirx);
 			clk_on(clk_hdmirx, CLK_HDMIRX);
 			sram_power_on(SRAM_PWR2_HDMIRX);

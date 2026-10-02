@@ -160,6 +160,14 @@ cannot be unloaded.
 - **The HDMI source decides.** Audio needs the source to send it over
   HDMI. A Kodi set to Bluetooth output sends none. `docs/09` §13 shows how
   to see which packets arrive.
+- **The HDMI PLL must be on for capture.** The receiver's PHY uses the
+  transmitter's HDMI PLL in CRT (`PLL_HDMI`, `PLL_HDMI_LDO1`), which no
+  driver on this kernel owns. The SD card's u-boot leaves it on; BPI's eMMC
+  u-boot leaves it off, and capture then fails with "Wait b/g/R lane koff
+  timeout" and no sync, although the TMDS clock is measured. The receiver
+  driver turns it on (`hdmi_pll_on()` in `hdmirx_clk_ctrl.c`). Found by
+  diffing CRT between a good and a bad boot, then writing the bad values
+  back one register at a time.
 - **The serial console is shared** with the audio firmware.
 - **No RTC battery**: the clock is right only after NTP.
 
