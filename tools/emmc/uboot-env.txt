@@ -19,7 +19,10 @@ setenv bpidir bananapi/bpi-w2/linux
 setenv bpiload 'fatload ${bdev} 0:1 0x02100000 ${bpidir}/bpi-w2.dtb && fatload ${bdev} 0:1 0x0f900000 ${bpidir}/bluecore.audio && fatload ${bdev} 0:1 0x03000000 ${bpidir}/uImage && fatload ${bdev} 0:1 0x31400000 ${bpidir}/uInitrd'
 setenv bpiboot 'go a; booti 0x03000000 0x31400000 0x02100000'
 setenv bootsd 'setenv bdev sd; setenv bootargs ${console_args} root=/dev/mmcblk0p2 rw rootwait; run bpiload && run bpiboot'
-setenv emmcload 'mmc dev 0 && mmc read 0x02100000 0x8000 0x800 && mmc read 0x0f900000 0x8800 0x2800 && mmc read 0x31400000 0xc000 0x8000 && mmc read 0x03000000 0x14000 0x1c000'
+# No bluecore.audio here: this u-boot has already loaded it (from the
+# firmware table entry bpikvm-emmc-bootsync points at its slot) and started
+# the audio CPU on it; reading it again overwrites the running firmware.
+setenv emmcload 'mmc dev 0 && mmc read 0x02100000 0x8000 0x800 && mmc read 0x31400000 0xc000 0x8000 && mmc read 0x03000000 0x14000 0x1c000'
 setenv bootemmc 'setenv bootargs ${console_args} root=/dev/mmcblk1p2 rw rootwait; run emmcload && run bpiboot'
 setenv bootcmd 'run bootsd; run bootemmc; run set_emmcbootargs; bootr'
 saveenv

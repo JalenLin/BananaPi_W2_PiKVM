@@ -260,9 +260,18 @@ partition:
 | File | At | Slot | Loaded to |
 |---|---|---|---|
 | bpi-w2.dtb | 16 MiB | 1 MiB | 0x02100000 |
-| bluecore.audio | 17 MiB | 5 MiB | 0x0f900000 |
+| bluecore.audio | 17 MiB | 5 MiB | 0x0f900000, by u-boot itself (below) |
 | uInitrd | 24 MiB | 16 MiB | 0x31400000 |
 | uImage | 40 MiB | 56 MiB | 0x03000000 |
+
+**This u-boot starts the audio CPU on its own**, before `bootcmd`, from the
+AUDIO entry of the vendor firmware table at 0x620000 (a copy at 0x628000)
+-- and `go a` does nothing after that. The entry pointed into what is now
+the uImage slot: the audio CPU ran a piece of the kernel and every audio
+RPC timed out. `bpikvm-emmc-bootsync` points the entry at the
+bluecore.audio slot (offset, length, sha256, and the table's checksum, a
+byte sum), and `emmcload` does not read that slot: reading it again lands
+on the running firmware and kills it.
 
 `bpikvm-emmc-bootsync` fills them from `/boot`, writing only what
 changed. On a system running from the eMMC it runs whenever the boot

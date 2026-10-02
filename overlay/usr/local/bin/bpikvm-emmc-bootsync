@@ -16,6 +16,14 @@
 #   uInitrd          24 MiB   16 MiB   0x31400000
 #   uImage           40 MiB   56 MiB   0x03000000
 #
+# The same u-boot also starts the audio CPU on its own, before bootcmd,
+# from the AUDIO entry of the vendor's firmware table (0x620000, a copy at
+# 0x628000) -- and `go a` does nothing after that. That entry pointed into
+# what is now the uImage slot, so the audio CPU ran a piece of the kernel
+# and every audio RPC timed out. The entry is pointed at bluecore.audio's
+# slot here, with its length and sha256, and the table checksum (a byte sum)
+# redone.
+#
 # <dir> defaults to /boot/bananapi/bpi-w2/linux. Without --force it only
 # runs when the root filesystem is the eMMC's -- a system booted from the SD
 # card must not put its kernel there. bpikvm-emmc-bootsync.path runs it when
@@ -67,4 +75,34 @@ while read -r name at size; do
     dd if="$f" of=$DEV bs=1M oflag=seek_bytes seek=$((at << 20)) conv=notrunc,fsync status=none
     echo "$name: written ($len bytes at ${at} MiB)"
 done <<< "$slots"
+
+# The vendor firmware table's AUDIO entry -> the bluecore.audio slot
+python3 - "$DEV" "$dir/bluecore.audio" <<'PY' || rc=1
+import hashlib, struct, sys
+dev, fw = sys.argv[1], open(sys.argv[2], "rb").read()
+AUDIO, SLOT = 7, 17 << 20
+with open(dev, "r+b") as d:
+    for base in (0x620000, 0x628000):
+        d.seek(base); t = bytearray(d.read(0x1000))
+        if t[:8] != b"VERONA__" or t[12] != 2:
+            print("firmware table at %#x: not one this knows, left alone" % base)
+            continue
+        part_len, fw_len = struct.unpack_from("<II", t, 24)
+        end = 32 + part_len + fw_len
+        changed = False
+        for o in range(32 + part_len, end, 64):
+            if t[o] != AUDIO:
+                continue
+            want = struct.pack("<QII", SLOT, len(fw), 5 << 20) + hashlib.sha256(fw).digest()
+            if t[o + 10:o + 10 + len(want)] != want:
+                t[o + 10:o + 10 + len(want)] = want
+                changed = True
+        if changed:
+            struct.pack_into("<I", t, 8, sum(t[12:end]) & 0xffffffff)
+            d.seek(base); d.write(t); d.flush()
+            print("firmware table at %#x: AUDIO entry -> %d MiB slot" % (base, SLOT >> 20))
+        else:
+            print("firmware table at %#x: up to date" % base)
+PY
+sync
 exit $rc
