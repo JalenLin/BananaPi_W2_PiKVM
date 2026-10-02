@@ -1,11 +1,18 @@
 #!/bin/bash
-# Assemble a flashable SD card image.
+# Assemble a flashable SD card image -- or, with IMAGE_TARGET=emmc, one for
+# the eMMC.
 #
 # Layout (from the BSP's scripts/dd_download.sh and bootloader.sh):
 #   offset 40 KiB          u-boot.bin
 #   sector 204800..        p1 vfat  "BPI-BOOT"  -- 60 MiB, grown if the staged
 #                                                  boot files need more
 #   after p1               p2 ext4  rootfs
+#
+# The eMMC image has the same partitions, labelled EMMC-BOOT and EMMC-ROOT so
+# that a board with both never mixes them up, and nothing before p1 but the
+# partition table: the eMMC's first MiBs hold its own boot loader and
+# environment (docs/10 §5). bpikvm-install-emmc writes it from a running SD
+# system and leaves those alone; do not dd it whole.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +45,17 @@ case "$FLAVOUR" in
         ;;
 esac
 echo ">>> kernel flavour: $FLAVOUR"
+
+TARGET="${IMAGE_TARGET:-sd}"
+case "$TARGET" in
+    sd)   BOOT_LABEL=BPI-BOOT;  ROOT_LABEL=BPI-ROOT ;;
+    emmc) BOOT_LABEL=EMMC-BOOT; ROOT_LABEL=EMMC-ROOT
+          # the BSP kernel has no eMMC driver that this boot loader can use
+          [ "$FLAVOUR" = mainline ] || { echo "IMAGE_TARGET=emmc needs KERNEL_FLAVOUR=mainline" >&2; exit 1; }
+          OUT="${OUT%.img}-emmc.img" ;;
+    *)    echo "IMAGE_TARGET must be 'sd' or 'emmc', got '$TARGET'" >&2; exit 1 ;;
+esac
+echo ">>> target: $TARGET"
 
 IMG_MB=3072          # total size
 P1_START=204800      # sector
@@ -165,7 +183,7 @@ EOF
 
 # p1: vfat plus the boot files
 truncate -s $((P1_SECTORS * 512)) /b/p1.img
-mkfs.vfat -F 32 -n BPI-BOOT /b/p1.img
+mkfs.vfat -F 32 -n $BOOT_LABEL /b/p1.img
 mcopy -i /b/p1.img -s /b/bootfs/* ::/
 
 # p2: ext4 + rootfs
@@ -191,14 +209,22 @@ if [ $FLAVOUR = bsp ]; then
     # Files for the BSP kernel only (overlay-bsp/)
     cp -r /b/overlay-bsp/. /b/rootfs/
 fi
+# Units added to overlay/ after the rootfs was built (rootfs-arch.sh enables
+# the rest when it builds it)
+mkdir -p /b/rootfs/etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/bpikvm-emmc-bootsync.path /b/rootfs/etc/systemd/system/multi-user.target.wants/
+# The rootfs's fstab mounts by label (the SD card's, BPI-*)
+sed -i 's/^LABEL=BPI-ROOT /LABEL=$ROOT_LABEL /; s/^LABEL=BPI-BOOT /LABEL=$BOOT_LABEL /' /b/rootfs/etc/fstab
+grep '^LABEL=' /b/rootfs/etc/fstab
 P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))
 truncate -s \$(( P2_SECTORS * 512 )) /b/p2.img
-mkfs.ext4 -q -F -L BPI-ROOT -d /b/rootfs /b/p2.img
+mkfs.ext4 -q -F -L $ROOT_LABEL -d /b/rootfs /b/p2.img
 
 # Write into the image
 dd if=/b/p1.img of=/b/$(basename "$OUT") bs=512 seek=$P1_START conv=notrunc status=none
 dd if=/b/p2.img of=/b/$(basename "$OUT") bs=512 seek=$P2_START conv=notrunc status=none
 
+if [ $TARGET = sd ]; then
 # Bootloader: u-boot.bin goes at 40 KiB
 dd if=/bsp/u-boot-rtk/u-boot.bin of=/b/$(basename "$OUT") bs=1024 seek=40 conv=notrunc status=none
 
@@ -222,6 +248,7 @@ printf 'SDMMC_BOOT\x00\x00\x01\x00\x00\x00\x00\x02\x00\x00' > /b/sdmmc_hdr.bin
 head -c $((0x1B8 - 0x14)) /dev/zero | tr '\000' '\377' >> /b/sdmmc_hdr.bin
 dd if=/b/sdmmc_hdr.bin of=/b/$(basename "$OUT") bs=1 count=440 conv=notrunc status=none
 rm -f /b/sdmmc_hdr.bin
+fi
 
 rm -f /b/p1.img /b/p2.img
 rm -rf /b/rootfs
@@ -231,4 +258,9 @@ sfdisk -l /b/$(basename "$OUT")
 
 echo
 echo ">>> done: $OUT ($(du -h "$OUT" | cut -f1))"
-echo ">>> flash with: sudo dd if=$OUT of=/dev/sdX bs=4M conv=fsync status=progress"
+if [ "$TARGET" = emmc ]; then
+    echo ">>> install from the board, booted from SD: bpikvm-install-emmc <image>"
+    echo ">>>   or from here: xz -T0 -c $OUT | ssh root@<board> 'xz -dc | bpikvm-install-emmc -y -'"
+else
+    echo ">>> flash with: sudo dd if=$OUT of=/dev/sdX bs=4M conv=fsync status=progress"
+fi

@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch the boot files for the eMMC's boot slots
+Documentation=file:///usr/local/bin/bpikvm-emmc-bootsync
+RequiresMountsFor=/boot
+
+[Path]
+PathChanged=/boot/bananapi/bpi-w2/linux
+Unit=bpikvm-emmc-bootsync.service
+
+[Install]
+WantedBy=multi-user.target

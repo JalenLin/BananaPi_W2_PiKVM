@@ -27,6 +27,9 @@ while time.time() < end:
 if not seen:
     print("no u-boot prompt"); sys.exit(1)
 time.sleep(1); rd(0.5)
+# The Esc spam can leave the line editor holding a partial escape sequence
+# that eats the next character: start on a fresh, empty line
+os.write(fd, b"\r"); time.sleep(0.5); rd(0.5)
 for cmd in sys.argv[1:]:
     w = 4
     if cmd.startswith("@"):

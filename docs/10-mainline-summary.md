@@ -18,6 +18,7 @@ Raspberry Pi as the HDMI source, a PC on the Type-C port) on 2026-10-01.
 | Boot from SD | done | BSP u-boot from SPI + SD, 6.18 kernel, root on `mmcblk0p2`; no failed units | §5, §8 |
 | Four cores, interrupts | done | spin-table release through MMIO; RTD129x ISO/MISC interrupt muxes | §6 |
 | SD card (root) | done | own driver for the rtsx-style SD core, 50 MHz, ~25 MB/s read | §8 |
+| eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS 52 MHz 8-bit, 38 MB/s read, 27 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file |
 | Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network | §9 |
 | Reboot | done | watchdog restart handler | §9 |
 | USB host ports | done | hub and a card reader enumerate | §7 |
@@ -35,9 +36,8 @@ Raspberry Pi as the HDMI source, a PC on the Type-C port) on 2026-10-01.
 
 Not done:
 
-- **eMMC as the system disk**: the board boots from the eMMC's own
-  bootloader now, but the kernel's eMMC driver does not transfer data yet,
-  so the system still lives on the SD card (§5 of this file).
+- **eMMC HS200**: the eMMC runs at High Speed (52 MHz); HS200 would need
+  the BSP's phase tuning (§5 of this file).
 - **ATX power control**: not wired on this board.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
 - **The board's own HDMI output**: no driver; the console is the serial port
@@ -55,6 +55,7 @@ make uboot                      # the BSP u-boot (also used by the mainline imag
 make kernel-mainline            # Image, dtb and modules
 make rootfs-arch                # Arch Linux ARM + PiKVM packages -> build/rootfs-arch.tar
 make image-mainline             # -> build/bpiw2-pikvm-mainline.img (3 GiB)
+make image-emmc                 # -> build/bpiw2-pikvm-mainline-emmc.img (3 GiB), see §5
 ```
 
 | Target | What it does | Output |
@@ -164,9 +165,28 @@ cannot be unloaded.
 
 ## 5. eMMC
 
-Status on 2026-10-02: **the board boots from the eMMC's bootloader**. The
-**kernel cannot use the eMMC yet**, so the root filesystem stays on the SD
-card.
+Status on 2026-10-02: **the system runs from the eMMC**, with no SD card.
+Three parts: a boot loader on the eMMC (flashed once, over the serial
+port), a kernel driver for the eMMC, and an image plus an installer.
+
+Installing, on a board whose eMMC has the boot loader and environment
+below:
+
+```sh
+make image-emmc
+# board booted from the SD image (any SW4), then from the build machine:
+xz -T0 -c build/bpiw2-pikvm-mainline-emmc.img | ssh root@<board> 'xz -dc | bpikvm-install-emmc -y -'
+# power off, take the SD card out, SW4 = 0, power on
+```
+
+The eMMC image has the SD image's partitions, labelled `EMMC-BOOT` and
+`EMMC-ROOT` (the fstab follows), so a board with both never mixes them up,
+and nothing before the first partition: `bpikvm-install-emmc` writes sector
+0 and everything from 100 MiB on, and keeps the boot loader. It then fills
+the raw boot slots (below). The root grows to fill the eMMC on the first
+boot, as on the SD card. Verified: the installed image read back
+identical, and the board booted from it (`root=/dev/mmcblk1p2`) into the
+whole PiKVM stack -- capture, stream, Janus, audio.
 
 ### The bootloader on the eMMC (done)
 
@@ -209,68 +229,89 @@ corrupted memory under the Android/LK chain (`09` §5); under this one it
 does not. Over 7 minutes of load (two 250 MiB copies, 40 parallel
 gzip/gunzip round trips) every byte compared equal, with no oops.
 
-The environment, saved with `saveenv`, boots our files from FAT partition
-1. It tries the SD card first, then the eMMC, then falls back to the
-vendor's `bootr`:
+The environment, saved with `saveenv`, is in `tools/emmc/uboot-env.txt`,
+which also shows how to set it through `ubstop.py`. It tries the SD card
+first (fatload from its FAT partition), then the eMMC, then falls back to
+the vendor's `bootr`. Two settings matter beyond the file names:
+`audio_loadaddr=0x0f900000` (the firmware's link address; the default
+0x01b00000 breaks the ACPU) and `initrd_high=0xffffffffffffffff` (else
+"ramdisk - allocation error"). Kept for recovery, from the bring-up:
+`bootprev` (as bootsd, with uImage.prev and bpi-w2.dtb.prev).
 
-```
-audio_loadaddr=0x0f900000            (the firmware's link address; the default 0x01b00000 breaks the ACPU)
-initrd_high=0xffffffffffffffff       (else: "ramdisk - allocation error")
-bpidir=bananapi/bpi-w2/linux
-bpiload=fatload ${bdev} 0:1 0x02100000 ${bpidir}/bpi-w2.dtb && fatload ${bdev} 0:1 0x0f900000 ${bpidir}/bluecore.audio && fatload ${bdev} 0:1 0x03000000 ${bpidir}/uImage && fatload ${bdev} 0:1 0x31400000 ${bpidir}/uInitrd
-bpiboot=go a; booti 0x03000000 0x31400000 0x02100000
-bootsd=setenv bdev sd; setenv bootargs ${console_args} root=/dev/mmcblk0p2 rw rootwait; run bpiload && run bpiboot
-bootemmc=setenv bdev mmc; setenv bootargs ${console_args} root=/dev/mmcblk1p2 rw rootwait; run bpiload && run bpiboot
-bootcmd=run bootsd; run bootemmc; run set_emmcbootargs; bootr
-bootprev=   (as bootsd, with uImage.prev and bpi-w2.dtb.prev)
-bootnoemmc= (as bootsd, with the eMMC node set disabled by "fdt set" first)
-```
+**This u-boot cannot read files from its eMMC.** BPI's eMMC driver in it
+refuses any DMA below 0xe0000 -- `panic: dma_addr = 0x000cd0c0`, and the
+board hangs with the watchdog already off -- and its FAT code keeps its
+buffers there. So `bootemmc` reads raw blocks (`mmc read`, as BPI's own
+`bootr` does) from fixed slots between the environment and the first
+partition:
+
+| File | At | Slot | Loaded to |
+|---|---|---|---|
+| bpi-w2.dtb | 16 MiB | 1 MiB | 0x02100000 |
+| bluecore.audio | 17 MiB | 5 MiB | 0x0f900000 |
+| uInitrd | 24 MiB | 16 MiB | 0x31400000 |
+| uImage | 40 MiB | 56 MiB | 0x03000000 |
+
+`bpikvm-emmc-bootsync` fills them from `/boot`, writing only what
+changed. On a system running from the eMMC it runs whenever the boot
+files change (`bpikvm-emmc-bootsync.path`), and
+`scripts/push-kernel-mainline.sh` runs it before it reboots; on one
+running from the SD card it does nothing, unless given `--force` (as the
+installer does).
 
 `bootdelay` is 0. To reach the prompt, send Esc while it boots
 (`tools/emmc/ubstop.py` does that, then runs the commands given).
 `tools/emmc/ubcmd.py` runs commands at a prompt that is already waiting.
 This u-boot's hush expands `${...}` inside double quotes when setting a
-variable, so set them with single quotes. It also has no `boot` command;
-use `run bootcmd`.
+variable, so set them with single quotes. It has no `boot` or `printenv`
+command; use `run bootcmd`.
 
-### The kernel driver (in progress)
+### The kernel driver (done)
 
-The eMMC controller at `0x98012000` is a Synopsys DesignWare MSHC. The
-register map, VERID `0x270a`, IDMAC and 32-bit addressing all match. It
-has a Realtek wrapper at +0x400. `kernel/mainline/dw_mmc-rtd129x.c` puts
-it on mainline's `dw_mmc` (patch 0014). The DT node is **disabled** until
-data transfers work.
+The eMMC controller at `0x98012000` is a Synopsys DesignWare MSHC (VERID
+`0x270a`, IDMAC, 32-bit descriptors) with a Realtek wrapper at +0x400.
+Commands work as mainline's `dw_mmc` expects; its DMA does not, and a glue
+on top of `dw_mmc` was abandoned for a driver of its own,
+`kernel/mainline/emmc-rtd129x.c` (patch 0014), which follows Realtek's BSP
+and u-boot. What it has to deal with, found one at a time on the board:
 
-What works, and what was learned:
+- **SB2 holds CPU writes back.** The bus bridge keeps posted writes from
+  DDR until it is told to sync (`0x9801a020`); the BSP does it after every
+  register write. Without it the DMAC fetches the previous transfer's
+  descriptors. The driver syncs once, after writing the descriptors.
+- **The DMAC does not stop at the last descriptor.** It follows the next
+  pointer anyway and runs whatever is there if it says OWN -- and it never
+  clears OWN, so stale descriptors from longer, earlier transfers do. With
+  no next pointer at all it fetches from address 0. The chain now ends on
+  a descriptor it does not own, and the DMAC is restarted from DBADDR
+  (DMA reset, BMOD software reset) for every transfer: parked on that last
+  descriptor, it ignores a new DBADDR.
+- **Data-transfer-over is early.** On a read the DMAC is still emptying
+  the FIFO into DDR. The read completes when the DMAC has moved every byte
+  (`TBBCNT`) and the wrapper has raised `DMA_DONE` -- which BSP and u-boot
+  wait for, but which comes for every descriptor.
+- **u-boot leaves the EMMC PLL tuned for HS200.** With its 200 MHz phases
+  the first reads after probe got no data from the card at all, now and
+  then. The driver sets the PLL to 100 MHz with the phases at 0, the BSP's
+  steps (`SYS_PLL_EMMC1..4` in CRT, the `DUMMY_SYS` toggle), and divides.
+- **Interrupts.** The wrapper's ISR (`+0x424`) gates the core's interrupt.
+  Its own `DMA_DONE` latches on every transfer and is not the core's:
+  unmasked, it is an interrupt storm that hangs the board.
+- **Busy.** The core's data-busy status does not clear after an R1b
+  command, so the driver leaves busy to the MMC core's CMD13 polling, and
+  only block reads wait for the previous data (as the BSP).
+- **1.8 V.** The pads are 1.8 V (`UHS_REG` bit 0); the MMC core asks for
+  3.3 V first, which the driver refuses.
 
-- **Interrupts.** The wrapper's ISR register (`+0x424`) gates the core's
-  interrupt. Its own `DMA_DONE` status latches on transfers, and dw_mmc
-  does not know it: left unmasked, it is an interrupt storm that hangs the
-  board. dw_mmc's handler always returns `IRQ_HANDLED`, so the kernel
-  cannot notice. Mask the wrapper's DMA and descriptor bits, clear
-  `DMA_DONE`, and pass only the core's interrupt (bit 4).
-- **1.8 V.** The pads are 1.8 V (`UHS_REG` bit 0). The MMC core asks for
-  3.3 V first, which would clear it; the glue refuses 3.3 V.
-- **The card answers.** CMD0/1/2/3/9/7 and the EXT_CSD read go through, at
-  25 MHz: `mmcblk1: mmc1:0001 8GME4R 7.28 GiB`. At 50 MHz, without the
-  HS200 phase tuning u-boot did for 200 MHz, the switch to the 8-bit bus
-  fails.
-- **Data transfers do not complete.** After the first one, every transfer
-  finds its descriptor still owned by the IDMAC. The IDMAC fetches it (the
-  wrapper's `IP_DESC0..3` mirror it), but `IDSTS` never shows RI/TI. The
-  wrapper's `DMA_DONE` is what latches instead. The BSP writes fresh
-  descriptors for every transfer and never looks at OWN. Ignoring OWN
-  makes it worse: the next transfer starts on a busy IDMAC and the board
-  hangs. Not the cause: fixed bursts, FIFOTH's burst size, the wrapper's
-  `SWC_SEL*`/`CP` settings (the glue sets them as the BSP does). The
-  chip's revision is past the one that needs the BSP's `lockapi`
-  workaround.
+Before these, the eMMC tests corrupted memory -- slab crashes, and resets
+of the whole SoC when a stale descriptor pointed into memory the TEE
+guards. A theory that the DMAC uses only 28 bits of the next pointer came
+out of that and was wrong.
 
-Next: complete transfers on the wrapper's `DMA_DONE`, as the BSP's
-`rtkemmc_wait_opt_end` does. That means a change in dw_mmc's DMA
-completion, or the BSP's sequence carried over in the glue. After that
-come the eMMC image itself (our SD layout behind the first 1.3 MiB the
-bootcode uses, `root=/dev/mmcblk1p2`) and HS200.
+Result: High Speed, 8 bits, 52 MHz: 38 MB/s read, 27 MB/s write. Ten
+minutes of 512 MiB buffered writes with readback, 1 GiB reads compared
+twice and four parallel memory checks all came out equal, with nothing in
+dmesg. HS200 (200 MHz) would need the BSP's phase tuning.
 
 Testing traps:
 
@@ -279,4 +320,7 @@ Testing traps:
 - A hung eMMC transfer blocks `sync`, so `sync; reboot` hangs. Use
   `echo b > /proc/sysrq-trigger` (with `kernel.sysrq` set to 1 first).
 - Keep the driver a module (`=m`) while working on it, and load it by
-  hand.
+  hand. Unloading it and loading it again is not a clean test: test after
+  a reboot.
+- A u-boot `panic` leaves the board hanging with the watchdog off: it needs
+  a power cycle.

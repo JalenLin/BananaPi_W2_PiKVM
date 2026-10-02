@@ -1,0 +1,9 @@
+[Unit]
+Description=Copy the boot files to the eMMC's boot slots
+Documentation=file:///usr/local/bin/bpikvm-emmc-bootsync
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+# Does nothing unless the root filesystem is on the eMMC
+ExecStart=/usr/local/bin/bpikvm-emmc-bootsync

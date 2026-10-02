@@ -80,7 +80,10 @@ fi
     mv uImage uImage.prev; mv bpi-w2.dtb bpi-w2.dtb.prev
     mv uImage.new uImage; mv bpi-w2.dtb.new bpi-w2.dtb
     cp bpi-w2.dtb rtd-1296-bananapi-w2-2GB.dtb
-    sync"
+    sync
+    # Booted from the eMMC: its u-boot boots raw copies (does nothing
+    # otherwise). Now, not from the .path unit, so it is done before a reboot.
+    if [ -x /usr/local/bin/bpikvm-emmc-bootsync ]; then bpikvm-emmc-bootsync; fi"
 echo ">>> kernel and dtb installed (previous ones kept as *.prev)"
 
 if [ "$MODULES" = 1 ]; then

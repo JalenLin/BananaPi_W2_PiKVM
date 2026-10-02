@@ -238,7 +238,8 @@ done
 done
 
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd sshd \
-    kvmd kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot
+    kvmd kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot \
+    bpikvm-emmc-bootsync.path
 
 # -- what must not be in an image -------------------------------------
 # Keys: bpikvm-firstboot creates them on each board. kvmd.install has just

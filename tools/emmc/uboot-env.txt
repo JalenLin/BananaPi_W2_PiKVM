@@ -1,0 +1,25 @@
+# The eMMC u-boot's environment for this project, one command per line, in
+# the order to type them at its BPI-W2> prompt (or let ubstop.py do it):
+#
+#   docker run --rm --device /dev/ttyUSB0 -v $PWD/tools/emmc:/t -v /tmp:/io \
+#       python:3-slim sh -c "grep -v '^#' /t/uboot-env.txt | xargs -d '\n' python3 -u /t/ubstop.py"
+#   and reboot the board while it waits for the prompt -- or paste them by hand
+#
+# Single quotes throughout: this u-boot's hush expands ${...} inside double
+# quotes when the variable is set, not when it runs. There is no `boot`
+# command; `run bootcmd` boots.
+#
+# SD card first, with fatload; then the eMMC from raw slots with `mmc read`
+# -- this u-boot cannot fatload from its eMMC (bpikvm-emmc-bootsync explains
+# why, and fills the slots); then the vendor's Android path.
+setenv audio_loadaddr 0x0f900000
+setenv initrd_high 0xffffffffffffffff
+setenv console_args 'earlycon=uart8250,mmio32,0x98007800 fbcon=map:0 console=ttyS0,115200 loglevel=7'
+setenv bpidir bananapi/bpi-w2/linux
+setenv bpiload 'fatload ${bdev} 0:1 0x02100000 ${bpidir}/bpi-w2.dtb && fatload ${bdev} 0:1 0x0f900000 ${bpidir}/bluecore.audio && fatload ${bdev} 0:1 0x03000000 ${bpidir}/uImage && fatload ${bdev} 0:1 0x31400000 ${bpidir}/uInitrd'
+setenv bpiboot 'go a; booti 0x03000000 0x31400000 0x02100000'
+setenv bootsd 'setenv bdev sd; setenv bootargs ${console_args} root=/dev/mmcblk0p2 rw rootwait; run bpiload && run bpiboot'
+setenv emmcload 'mmc dev 0 && mmc read 0x02100000 0x8000 0x800 && mmc read 0x0f900000 0x8800 0x2800 && mmc read 0x31400000 0xc000 0x8000 && mmc read 0x03000000 0x14000 0x1c000'
+setenv bootemmc 'setenv bootargs ${console_args} root=/dev/mmcblk1p2 rw rootwait; run emmcload && run bpiboot'
+setenv bootcmd 'run bootsd; run bootemmc; run set_emmcbootargs; bootr'
+saveenv

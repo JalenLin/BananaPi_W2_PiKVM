@@ -61,6 +61,7 @@ On this branch (`kernel-6.18`), the mainline kernel has its own line:
 | `make builder-mainline sources-mainline kernel-mainline` | Build the 6.18 kernel |
 | `make rootfs-arch` | Build the Arch Linux ARM rootfs with PiKVM's packages (ustreamer and kvmd built from our patched sources, Janus from PiKVM's repository) |
 | `make image-mainline` | Assemble `build/bpiw2-pikvm-mainline.img` from those two (u-boot comes from `make uboot`) |
+| `make image-emmc` | The same system as an eMMC image, installed from a board running the SD image with `bpikvm-install-emmc` (docs/10 §5) |
 
 What that image does, and the details of building it, are in
 [`docs/10-mainline-summary.md`](docs/10-mainline-summary.md).
@@ -206,7 +207,9 @@ build/          build outputs
 - After an OTG test the board once fell into a boot loop, resetting hard at
   the instant initramfs started. The diagnosis is in `docs/06-changes.md`
   §8; unplug the Type-C cable and power-cycle.
-- SW4: `0` boots from eMMC, `1` boots from SPI + SD.
+- SW4: `0` boots from eMMC, `1` boots from SPI + SD. On `kernel-6.18` the
+  eMMC's boot loader (once flashed, docs/10 §5) tries the SD card first and
+  then the eMMC system.
 - **There is no RTC battery.** Every boot starts in 2014 until
   `systemd-timesyncd` syncs. Until then apt fails because signatures are
   "not valid yet".

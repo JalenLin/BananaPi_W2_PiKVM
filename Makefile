@@ -5,6 +5,7 @@
 
 .PHONY: help builder sources kernel uboot rootfs image all clean-kernel distclean \
         builder-mainline sources-mainline kernel-mainline rootfs-arch image-mainline \
+        image-emmc \
         clean-kernel-mainline
 
 help:
@@ -23,6 +24,7 @@ help:
 	@echo "make kernel-mainline   - build Image + dtbs + modules"
 	@echo "make rootfs-arch       - build the Arch Linux ARM + PiKVM rootfs it uses"
 	@echo "make image-mainline    - assemble an SD image with that kernel"
+	@echo "make image-emmc        - the same system as an eMMC image (bpikvm-install-emmc)"
 
 builder:
 	docker build -t bpiw2-pikvm/builder:bullseye -f docker/builder.Dockerfile docker/
@@ -63,6 +65,9 @@ rootfs-arch:
 
 image-mainline:
 	KERNEL_FLAVOUR=mainline scripts/build-image.sh
+
+image-emmc:
+	KERNEL_FLAVOUR=mainline IMAGE_TARGET=emmc scripts/build-image.sh
 
 clean-kernel-mainline:
 	BUILDER_IMAGE=bpiw2-pikvm/builder-mainline:trixie scripts/in-docker.sh \

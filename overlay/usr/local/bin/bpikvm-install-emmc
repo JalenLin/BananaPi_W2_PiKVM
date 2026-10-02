@@ -1,0 +1,101 @@
+#!/bin/bash
+# Install an eMMC image (make image-emmc) onto this board's eMMC.
+#
+#   bpikvm-install-emmc [-y] [--force] <image.img | image.img.xz | ->
+#
+# Run it on the board booted from the SD card. "-" reads a raw image from
+# stdin, e.g. from the build machine:
+#   xz -T0 -c bpiw2-pikvm-mainline-emmc.img | ssh root@<board> 'xz -dc | bpikvm-install-emmc -y -'
+#
+# Only the partition table (sector 0) and everything from the first
+# partition on (sector 204800, 100 MiB) are written, and then the boot
+# files' raw copies that the eMMC's u-boot loads (bpikvm-emmc-bootsync). The
+# first MiBs hold the eMMC's own boot loader and its saved environment,
+# which this image does not carry -- they come from tools/emmc/romflash.py,
+# see docs/10-mainline-summary.md §5. The partition table goes last, so an
+# interrupted run leaves no table pointing at half-written filesystems.
+set -euo pipefail
+
+DEV=/dev/mmcblk1
+P1_START=204800   # sectors; as scripts/build-image.sh
+
+yes=0 force=0 src=
+for a in "$@"; do
+    case "$a" in
+        -y) yes=1 ;;
+        --force) force=1 ;;
+        -h|--help) sed -n '2,16s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        *) [ -z "$src" ] || { echo "one image only" >&2; exit 2; }; src="$a" ;;
+    esac
+done
+[ -n "$src" ] || { sed -n '2,16s/^# \{0,1\}//p' "$0"; exit 2; }
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+[ -b "$DEV" ] || { echo "$DEV: no eMMC (is its DT node enabled?)" >&2; exit 1; }
+
+root="$(findmnt -n -o SOURCE / || true)"
+case "$root" in
+    "$DEV"*) echo "the root filesystem is on the eMMC; boot from the SD card to install" >&2; exit 1 ;;
+esac
+if findmnt -rn -o SOURCE | grep -q "^${DEV}p"; then
+    echo "eMMC partitions are mounted; unmount them first:" >&2
+    findmnt -rn -o SOURCE,TARGET | grep "^${DEV}p" >&2
+    exit 1
+fi
+
+# The eMMC's u-boot sits at block 0x107 (romflash.py / the BPI flash writer)
+bl="$(dd if=$DEV bs=512 skip=$((0x107)) count=8 status=none | tr -d '\000\377' | head -c 64 | wc -c)"
+if [ "$bl" -eq 0 ]; then
+    echo "no boot loader found on the eMMC (block 0x107 is empty):" >&2
+    echo "it would not boot this. Flash one first (tools/emmc/romflash.py)," >&2
+    echo "or pass --force to install anyway." >&2
+    [ "$force" = 1 ] || exit 1
+fi
+
+case "$src" in
+    -) open_src() { cat; } ;;
+    *.xz) [ -f "$src" ] || { echo "$src: not found" >&2; exit 1; }; open_src() { xz -dc "$src"; } ;;
+    *.gz) [ -f "$src" ] || { echo "$src: not found" >&2; exit 1; }; open_src() { gzip -dc "$src"; } ;;
+    *) [ -f "$src" ] || { echo "$src: not found" >&2; exit 1; }; open_src() { cat "$src"; } ;;
+esac
+
+echo "eMMC: $DEV, $(lsblk -dno SIZE $DEV); its first $((P1_START / 2048)) MiB (boot loader) are kept"
+lsblk -no NAME,SIZE,FSTYPE,LABEL $DEV | sed 's/^/  now: /'
+if [ "$yes" != 1 ]; then
+    if [ "$src" = - ]; then
+        echo "stdin is the image: pass -y to confirm" >&2; exit 1
+    fi
+    read -r -p "Overwrite everything on the eMMC from sector $P1_START on? [y/N] " ans
+    case "$ans" in y|Y|yes) ;; *) echo "aborted"; exit 1 ;; esac
+fi
+
+mbr="$(mktemp)"
+trap 'rm -f "$mbr"' EXIT
+# Drop the old table first: nothing should mount the eMMC halfway through
+dd if=/dev/zero of=$DEV bs=512 count=1 conv=fsync status=none
+blockdev --rereadpt $DEV 2>/dev/null || true
+
+echo "writing..."
+open_src | {
+    dd of="$mbr" bs=512 count=1 iflag=fullblock status=none
+    dd of=/dev/null bs=512 count=$((P1_START - 1)) iflag=fullblock status=none
+    dd of=$DEV bs=4M iflag=fullblock oflag=seek_bytes seek=$((P1_START * 512)) \
+       conv=fsync status=progress
+}
+[ "$(tail -c 2 "$mbr" | od -An -tx1 | tr -d ' ')" = 55aa ] || {
+    echo "the image has no partition table in sector 0 -- not an eMMC image?" >&2; exit 1; }
+dd if="$mbr" of=$DEV bs=512 count=1 conv=fsync status=none
+blockdev --rereadpt $DEV
+udevadm settle 2>/dev/null || true
+
+lsblk -no NAME,SIZE,FSTYPE,LABEL $DEV | sed 's/^/  new: /'
+echo "checking the filesystems..."
+fsck.vfat -n ${DEV}p1 >/dev/null
+e2fsck -fn ${DEV}p2 >/dev/null
+
+# The eMMC's u-boot boots raw copies of the boot files, not p1's files
+mnt="$(mktemp -d)"
+mount -o ro ${DEV}p1 "$mnt"
+bpikvm-emmc-bootsync --force "$mnt/bananapi/bpi-w2/linux" || { umount "$mnt"; exit 1; }
+umount "$mnt"; rmdir "$mnt"
+echo "done. With SW4 = 0 and no SD card, the board now boots from the eMMC"
+echo "(its root grows to fill the eMMC on the first boot)."
