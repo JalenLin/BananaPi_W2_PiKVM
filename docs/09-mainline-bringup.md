@@ -1874,6 +1874,39 @@ again, over the running firmware -- its UART output stopped right at that
 `mmc read`. Neither loads it now. A boot stopped at the u-boot prompt also
 leaves the audio CPU dead, until the next boot.
 
+### The SD card from the eMMC system (2026-10-03)
+
+Running from the eMMC, the kernel saw no SD card at all -- not one in at
+power-on, not one inserted afterwards. The driver had been written against
+a board that always booted from the card, so everything the card needs
+before a command is sent was left to u-boot, which through this path never
+touches it:
+
+- The card's supply goes through a switch driven by `prob_2` (MISC GPIO
+  99). The BSP leaves the pin an input and decides with its pad pull, down
+  for on. Up, the card has no power.
+- The card reader's own pads have a function register, `PFUNC_CR`
+  (0x98012610), set to 0x33333323 when the card is powered and 0x22223322
+  when it is not, plus a drive strength (0x98012634/638). These sit in the
+  eMMC block, outside the eMMC node, so the SD node gets a second `reg`
+  range for them.
+- The reader's clocks (CLK_EN1 CR and SD_IP) and its reset (`RSTN_CR`).
+  Without the clocks its registers read 0xdeadbeef, which looked at first
+  like the pad settings not taking effect -- writing them back by hand
+  "fixed" nothing because the core itself was not running.
+
+`set_ios` now does the power the BSP's way (`rtk_sdmmc_card_power()`) and
+probe pulses the reset, so the controller starts from a known state
+whichever boot loader ran. Hot-plug needed nothing more: the host already
+polls (`MMC_CAP_NEEDS_POLL`), the card detect line not being wired to an
+interrupt.
+
+Verified from the eMMC system: a 236 GiB card found both ways, ext4 on it
+at 50 MHz 4-bit with 512 MiB written and read back equal, and the SD image
+written onto that card from the eMMC system and booted. So an SD card can
+be a data disk -- PiKVM's MSD images, say -- on a board whose system is
+the eMMC.
+
 ## 15. Sources
 
 | Source | Used for |

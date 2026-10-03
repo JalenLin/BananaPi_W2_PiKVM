@@ -23,12 +23,19 @@ eMMC's u-boot (SW4 = 0), eMMC alone -- the first boot grew the root and
 made the host keys, no unit failed, and capture (1080p), the stream,
 HDMI audio (`arecord`) and keyboard/mouse (`configured`) all worked.
 
+The SD driver change that followed (`6f4f501`, the card's power and the
+controller no longer left to u-boot) was verified from the eMMC system on
+a 236 GiB card: found when inserted after boot and when in at power-on,
+ext4 at 50 MHz 4-bit, 512 MiB written and read back equal, and then the
+SD image written onto it from that same eMMC system and booted.
+
 | Feature | State | How it was verified | Where |
 |---|---|---|---|
 | Boot from SD | done | BSP u-boot from SPI + SD (SW4 = 1), or the eMMC's u-boot with an SD card in (SW4 = 0); 6.18 kernel, root on `mmcblk0p2`; no failed units | §5, §8 |
 | Boot from eMMC | done | BPI's eMMC u-boot, no SD card, root on `mmcblk1p2`; capture, stream, Janus and audio as from the SD card | §5 of this file |
 | Four cores, interrupts | done | spin-table release through MMIO; RTD129x ISO/MISC interrupt muxes | §6 |
 | SD card (root) | done | own driver for the rtsx-style SD core, 50 MHz, ~25 MB/s read | §8 |
+| SD card from the eMMC system | done | the driver powers the card and starts the controller itself, so an SD card works as a data disk while the root is the eMMC's; hot-plug too (the host polls) | §5 of this file |
 | eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS 52 MHz 8-bit, 38 MB/s read, 27 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file |
 | Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network | §9 |
 | Reboot | done | watchdog restart handler | §9 |
@@ -47,15 +54,6 @@ HDMI audio (`arecord`) and keyboard/mouse (`configured`) all worked.
 
 Not done:
 
-- **The SD card while running from the eMMC.** Booted from the eMMC, the
-  kernel cannot use an SD card, inserted before or after power-on: the SD
-  driver relies on u-boot for the card's power and pads (`PFUNC_CR`
-  0x98012610, the pad at 0x98012618 that pulls the power switch, the drive
-  strength at 0x98012634/638) and they are only set when u-boot itself
-  reads the card. Writing those back was not enough (the SD core's
-  registers then read 0xde). There is no hot-plug either. With an SD card
-  in at power-on the board boots the SD card anyway, so this only matters
-  for writing an SD card from the eMMC system.
 - **An eMMC install without the serial port.** Each board needs the eMMC
   boot loader flashed (`romflash.py`) and its u-boot environment set
   (`uboot-env.txt` through `ubstop.py`) over the serial console once,
@@ -333,6 +331,12 @@ kills it. A board with this boot loader but no eMMC system needs
 entry points at a firmware this kernel knows. A boot stopped at the
 u-boot prompt (Esc, `ubstop.py`) also leaves the audio CPU dead until the
 next boot.
+
+An SD card is usable from the eMMC system: the driver powers it and starts
+the controller itself rather than relying on u-boot having read the card
+(`09` §14). It is found whether it is in at power-on or inserted later, so
+it can hold data -- MSD images, say -- while the system runs from the
+eMMC.
 
 `bpikvm-emmc-bootsync` fills them from `/boot`, writing only what
 changed. On a system running from the eMMC it runs whenever the boot
