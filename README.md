@@ -163,6 +163,7 @@ were worked out.
 | [`docs/03-image-and-boot.md`](docs/03-image-and-boot.md) | Image layout, boot chain, u-boot's constraints | Current state |
 | [`docs/02-decisions.md`](docs/02-decisions.md) | Kernel / rootfs / build environment choices, with later corrections | Decision record |
 | [`docs/01-research-findings.md`](docs/01-research-findings.md) | Fact-finding and evidence gathered before any code was written | **Snapshot as of 2026-09-04** |
+| [`docs/11-install-and-use.md`](docs/11-install-and-use.md) | **Installing and running it**: which image, flashing the card, putting the system on the eMMC, where the ISOs go, updating a board, recovery | Current state (this branch) |
 | [`docs/10-mainline-summary.md`](docs/10-mainline-summary.md) | **The `kernel-6.18` branch in one page**: what works (H.264, WebRTC, HDMI audio, booting from the eMMC, ...), how to build and flash it, what the branch consists of | Current state (this branch) |
 | [`docs/09-mainline-bringup.md`](docs/09-mainline-bringup.md) | **The `kernel-6.18` branch**: how the second kernel tree is built, what the boot chain does, milestone status, every finding | Current state + process (this branch) |
 | [`docs/08-kernel-uplift.md`](docs/08-kernel-uplift.md) | Not chasing the latest: which LTS is worth targeting, and an existing port to crib from | Analysis + plan |

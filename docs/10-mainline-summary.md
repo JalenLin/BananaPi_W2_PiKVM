@@ -5,6 +5,9 @@ Linux 6.18 LTS, Arch Linux ARM and PiKVM's own packages. The bring-up
 story, with every finding and how it was verified, is in
 `09-mainline-bringup.md`. Section numbers below (§n) refer to that file.
 
+**To install and run it, read `11-install-and-use.md`.** This file is what
+the images are and how they are built.
+
 The `main` branch keeps the BSP 4.9 line (Debian 13); this branch can build
 both, and the two are not merged.
 
