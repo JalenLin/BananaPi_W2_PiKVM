@@ -2099,7 +2099,7 @@ Verified:
   35,700 rounds, no mismatch. The sensor reached 105 C after two minutes;
   the passive trip then held the CPUs at 1.2-1.3 GHz, voltage following,
   between 101 and 105 C, and they went back to 1.4 GHz when the load
-  stopped. On this board, with no heatsink of its own, a sustained
+  stopped. On this board as it is cooled here, a sustained
   all-core load runs at about 1.25 GHz; bursts at 1.4 GHz.
 - Capture, the kvmd snapshot, HID, HDMI audio and every unit as before.
 
