@@ -35,7 +35,8 @@ SD image written onto it from that same eMMC system and booted.
 | Boot from eMMC | done | BPI's eMMC u-boot, no SD card, root on `mmcblk1p2`; capture, stream, Janus and audio as from the SD card | §5 of this file |
 | Four cores, interrupts | done | spin-table release through MMIO; RTD129x ISO/MISC interrupt muxes | §6 |
 | SD card (root) | done | own driver for the rtsx-style SD core, 50 MHz, ~25 MB/s read | §8 |
-| SD card from the eMMC system | done | the driver powers the card and starts the controller itself, so an SD card works as a data disk while the root is the eMMC's; hot-plug too (the host polls) | §5 of this file |
+| SD card from the eMMC system | done | the driver powers the card, starts the controller and tunes the bus itself, so an SD card works as a data disk while the root is the eMMC's -- 4-bit 50 MHz, 29.7 MB/s; hot-plug too (the host polls) | §5 of this file |
+| Virtual media store | done | its own partition on the SD image (`BPI-MSD`, the rest of the card), as PiKVM does it; on the eMMC image a directory, or a card dedicated with `bpikvm-msd-sd`. kvmd uploads an ISO onto either through its API | §6 of this file |
 | eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS 52 MHz 8-bit, 38 MB/s read, 27 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file |
 | Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network | §9 |
 | Reboot | done | watchdog restart handler | §9 |
@@ -90,7 +91,7 @@ make sources sources-mainline   # BSP, kvmd, ustreamer, Janus, Linux 6.18; appli
 make uboot                      # the BSP u-boot (also used by the mainline image)
 make kernel-mainline            # Image, dtb and modules
 make rootfs-arch                # Arch Linux ARM + PiKVM packages -> build/rootfs-arch.tar
-make image-mainline             # -> build/bpiw2-pikvm-mainline.img (3 GiB)
+make image-mainline             # -> build/bpiw2-pikvm-mainline.img (3.5 GiB)
 make image-emmc                 # -> build/bpiw2-pikvm-mainline-emmc.img (3 GiB), see §5
 ```
 
@@ -112,6 +113,8 @@ with its Debian rootfs, as on `main`.
 sudo dd if=build/bpiw2-pikvm-mainline.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
+- The image is 3.5 GiB: 256 MiB of boot files, a 3 GiB root and the ISO
+  store, which grows to the rest of the card on the first boot (§6).
 - SW4 = 1 (SPI + SD) boots the SD card's u-boot. SW4 = 0 boots the eMMC's
   u-boot, which, once flashed and set up as in §5, also boots the SD card
   when one is in, and the eMMC system when not. The Type-C port goes to
@@ -132,6 +135,7 @@ sudo dd if=build/bpiw2-pikvm-mainline.img of=/dev/sdX bs=4M conv=fsync status=pr
 | `tools/emmc/romflash.py` | Flash the eMMC boot loader through the SoC ROM's serial download mode (§5) |
 | `tools/emmc/ubstop.py`, `ubcmd.py`, `uboot-env.txt` | Stop the eMMC's u-boot (bootdelay 0) and run commands; its environment (§5) |
 | `bpikvm-install-emmc`, `bpikvm-emmc-bootsync` (on the board) | Install the eMMC image from a running SD system; keep the eMMC's raw boot slots and firmware table in step with `/boot` (§5) |
+| `bpikvm-msd-sd`, `bpikvm-expand` (on the board) | Dedicate an SD card to the ISO store (§6); grow the last partition to fill the medium |
 
 A module can be rebuilt and replaced without a reboot: `make kernel-mainline`,
 copy the `.ko` into `/usr/lib/modules/6.18.*/`, and `rmmod`/`modprobe`
@@ -410,3 +414,35 @@ Testing traps:
   a reboot.
 - A u-boot `panic` leaves the board hanging with the watchdog off: it needs
   a power cycle.
+
+## 6. The virtual media store (ISOs)
+
+kvmd serves virtual media (MSD) out of `/var/lib/kvmd/msd`, mounted
+read-only; its remount helper takes it read-write only while it writes an
+image. Where that comes from differs per image.
+
+**The SD image** gives it a partition of its own, `BPI-MSD`, as PiKVM's own
+images do: root is a fixed 3 GiB and the ISO partition takes the rest of
+the card (`bpikvm-expand` grows it on the first boot -- 156 MiB in the
+image to 232 GiB on a 256 GB card). ISOs therefore cannot fill the root
+filesystem, and the Web UI shows how much room is left for images. The
+filesystem's root is owned by `kvmd`, so uploads need nothing else.
+
+**The eMMC image** keeps it a directory on the root filesystem
+(`/var/lib/kvmd/msd.data`, bind-mounted), because a 7.3 GiB eMMC has
+little to spare. To put the ISOs on an SD card instead:
+
+```sh
+bpikvm-msd-sd            # erase /dev/mmcblk0, label it BPI-MSD and use it
+bpikvm-msd-sd --status   # where the store is now
+bpikvm-msd-sd --undo     # back to the eMMC's own directory
+```
+
+The card is mounted at `/var/lib/kvmd/msd.data`, under the bind mount kvmd
+already has, so kvmd itself needs no reconfiguration. The fstab entry
+carries `nofail`: with no card in, the store is the empty directory on the
+eMMC again. Such a card is not bootable, so the board still boots from the
+eMMC with one in -- its u-boot tries the card, finds nothing and falls
+back. A card carrying the SD *system* has a `BPI-MSD` partition too (its
+p3), and is picked up as the store, which is the point: the ISOs are on
+the card either way.

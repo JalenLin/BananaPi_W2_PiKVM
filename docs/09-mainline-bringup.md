@@ -1836,6 +1836,45 @@ slots between the environment and the first partition with `mmc read`,
 which `bpikvm-emmc-bootsync` fills from `/boot` (on every change, through a
 .path unit, and from `push-kernel-mainline.sh` before it reboots).
 
+### The SD card's own settings (2026-10-03)
+
+With the card powered (above), it was found and then every data transfer
+failed its CRC; the core's recovery power cycle left the host unable to
+read even a response (CMD2 kept failing) and the card was dropped. Three
+more things had been coming from u-boot, and now come from the driver:
+
+- **Drive strength and `SEL3318`.** The pad drive strength (0x98012634/638)
+  and `SEL3318` in `PLL_SD1` have to match. Measured at 50 MHz: the BSP's
+  0x3333 with `SEL3318` 1 reads 1-bit at every sampling phase and 4-bit at
+  none; 0xbbbb with 1 reads nothing at all; 0xbbbb with 2 reads both. The
+  last is what a board booted from its card has always run, u-boot having
+  left it after taking the card to a UHS mode -- which is also why the
+  BSP, when it switches a card to 1.8 V, sets `SEL3318` to 2 and
+  deliberately leaves the pads at 3.3 V ("keep IO pad voltage at 3.3v for
+  SD card compatibility").
+- **The sampling phases.** `PLL_SD1` holds a TX and an RX phase, 32 steps
+  each; u-boot tunes them when it reads a card and leaves them at 0 when
+  it does not. The MMC core only asks a host to tune in the UHS modes, so
+  the driver tunes itself, once, when the clock first goes above 25 MHz:
+  a block read at each RX phase, then the middle of the longest run that
+  worked, as the BSP's `rtk_sdmmc_tuning_rx()` does. A read exercises both
+  directions at once, so no command-only test is needed -- which matters,
+  because the card's address is not known to a host driver during
+  identification. If no phase reads, it stays at 25 MHz rather than let
+  the core fail the card. A failing read has to time out, so the timeout
+  is shortened while scanning: 32 phases at 2 s each is a minute.
+- **A card power cycle needs the core started over**, as the BSP's
+  `hw_reset` does (it calls its whole `hw_initial`). The MMC core power
+  cycles a card to recover from any failed transfer, and without this the
+  host never worked again afterwards.
+
+Two traps worth writing down. The tuning first ran on `actual_clock`,
+which still holds the last card's rate when the clock is switched off, so
+it ran on a powered-down slot, failed everything and pinned the host to
+25 MHz; it has to be the rate the core asked for. And a 1-bit read working
+at every phase while a 4-bit read works at none looks like a tuning
+problem and is not -- it is the drive strength.
+
 ### Capture after the eMMC's u-boot (2026-10-03)
 
 Booted that way, the receiver measured the TMDS clock and then never
