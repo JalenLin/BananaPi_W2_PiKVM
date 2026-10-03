@@ -166,6 +166,8 @@ struct rtd129x_sdmmc {
 	struct mmc_host		*mmc;
 
 	void __iomem		*sd;	/* the card reader core */
+	void __iomem		*pad;	/* its pads, 0x98012600; may be NULL */
+	unsigned char		power_mode;
 	struct regmap		*crt;	/* CRT syscon, for the SD PLL; may be NULL */
 
 	int			irq;
@@ -266,10 +268,53 @@ static void rtd129x_set_clock(struct rtd129x_sdmmc *host, unsigned int hz)
 	host->mmc->actual_clock = actual;
 }
 
+/*
+ * Card power and pads. The card's supply goes through a switch whose control
+ * pin, prob_2 (MISC GPIO 99), is left as an input: its pad pull decides --
+ * down for on, up for off. The card reader's own pads have a function
+ * register, on (0x33333323) or quiet (0x22223322), as the BSP's
+ * rtk_sdmmc_card_power() sets them, and a drive strength.
+ *
+ * The BSP u-boot sets all of this when it reads the card, and this driver
+ * used to depend on it: booted from the eMMC, where u-boot does not touch
+ * the card, nothing here worked (the switch was off, the pads quiet).
+ */
+#define PAD_PFUNC_CR		0x10
+#define  PFUNC_CR_ON		0x33333323
+#define  PFUNC_CR_OFF		0x22223322
+#define PAD_PCONF_PROB		0x18	/* prob_2 in bits 23:20 */
+#define  PROB2_PULL_EN		BIT(21)
+#define  PROB2_PULL_UP		BIT(20)
+#define PAD_DRIVE0		0x34
+#define PAD_DRIVE1		0x38
+
+static void rtd129x_power(struct rtd129x_sdmmc *host, unsigned char mode)
+{
+	u32 pconf;
+
+	if (!host->pad || mode == host->power_mode || mode == MMC_POWER_ON)
+		return;
+	pconf = readl(host->pad + PAD_PCONF_PROB) | PROB2_PULL_EN;
+	if (mode == MMC_POWER_UP) {
+		writel(PFUNC_CR_ON, host->pad + PAD_PFUNC_CR);
+		writel(0x0000bbbb, host->pad + PAD_DRIVE0);
+		writel(0xbbbbbbbb, host->pad + PAD_DRIVE1);
+		writel(pconf & ~PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
+		msleep(10);		/* the BSP's delay after power on */
+	} else {
+		writel(PFUNC_CR_OFF, host->pad + PAD_PFUNC_CR);
+		writel(pconf | PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
+	}
+	host->power_mode = mode;
+	dev_dbg(host->dev, "card power %s\n", mode == MMC_POWER_UP ? "on" : "off");
+}
+
 static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct rtd129x_sdmmc *host = mmc_priv(mmc);
 	u8 cfg1;
+
+	rtd129x_power(host, ios->power_mode);
 
 	cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_CFG1_BUS_WIDTH_MASK;
 	switch (ios->bus_width) {
@@ -753,10 +798,16 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	/* Optional: without them it all hangs on what u-boot left */
+	host->pad = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(host->pad))
+		host->pad = NULL;
+	host->power_mode = 0xff;
+
 	/*
-	 * Optional on purpose. There is no clock or reset driver for this SoC
-	 * in mainline, and the bootloader has just used this controller to
-	 * read the kernel, so it is already running.
+	 * Optional, for older DTs. Booted through the eMMC's u-boot the card
+	 * reader may not have been touched since power-on, so with a reset it
+	 * is started over from a known state.
 	 */
 	host->clk_cr = devm_clk_get_optional_enabled(dev, "cr");
 	if (IS_ERR(host->clk_cr)) {
@@ -772,6 +823,10 @@ static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 	if (IS_ERR(host->rstc)) {
 		ret = PTR_ERR(host->rstc);
 		goto err_free;
+	}
+	if (host->rstc) {
+		reset_control_assert(host->rstc);
+		udelay(10);
 	}
 	reset_control_deassert(host->rstc);
 

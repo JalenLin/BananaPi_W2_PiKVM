@@ -246,7 +246,15 @@
 	 */
 	sdmmc: mmc@10400 {
 		compatible = "realtek,rtd1295-sdmmc";
-		reg = <0x10400 0x200>;
+		/*
+		 * The second range is the card reader's pads, in the eMMC
+		 * block but outside its node: PFUNC_CR, the pad of the SD
+		 * power switch (prob_2) and the drive strength.
+		 */
+		reg = <0x10400 0x200>, <0x12600 0x40>;
+		clocks = <&crt_clk 25>, <&crt_clk 31>;	/* CLK_EN1: CR, SD_IP */
+		clock-names = "cr", "sd_ip";
+		resets = <&reset2 RTD1295_RSTN_CR>;
 		/*
 		 * The SD PLL (PLL_SD3/4) is in CRT. The driver sets it to a
 		 * known 100 MHz, which is what makes high speed (50 MHz)
