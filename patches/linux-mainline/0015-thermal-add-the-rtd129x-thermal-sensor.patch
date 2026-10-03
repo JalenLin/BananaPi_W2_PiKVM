@@ -1,0 +1,39 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] thermal: add the Realtek RTD129x thermal sensor
+
+The RTD1295/RTD1296 has a temperature sensor next to the CPUs. The
+driver, rtd129x-thermal.c, is kept outside the kernel tree in
+kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+lines hook it in.
+
+diff --git a/drivers/thermal/Kconfig b/drivers/thermal/Kconfig
+--- a/drivers/thermal/Kconfig
++++ b/drivers/thermal/Kconfig
+@@ -345,6 +345,16 @@
+ 	  Enable this to plug the SPEAr thermal sensor driver into the Linux
+ 	  thermal framework.
+ 
++config RTD129X_THERMAL
++	tristate "Realtek RTD129x thermal sensor"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on HAS_IOMEM
++	depends on OF
++	depends on THERMAL_OF
++	help
++	  Support for the temperature sensor of the Realtek RTD1295 and
++	  RTD1296 SoCs.
++
+ config SUN8I_THERMAL
+ 	tristate "Allwinner sun8i thermal driver"
+ 	depends on ARCH_SUNXI || COMPILE_TEST
+diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -40,6 +40,7 @@
+ obj-$(CONFIG_THERMAL_MMIO)		+= thermal_mmio.o
+ obj-$(CONFIG_AIROHA_THERMAL)	+= airoha_thermal.o
+ obj-$(CONFIG_SPEAR_THERMAL)	+= spear_thermal.o
++obj-$(CONFIG_RTD129X_THERMAL)	+= rtd129x-thermal.o
+ obj-$(CONFIG_SUN8I_THERMAL)     += sun8i_thermal.o
+ obj-$(CONFIG_ROCKCHIP_THERMAL)	+= rockchip_thermal.o
+ obj-y				+= renesas/

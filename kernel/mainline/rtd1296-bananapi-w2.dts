@@ -132,6 +132,35 @@
 			no-map;
 		};
 	};
+
+	/*
+	 * Only a critical trip: there is no cpufreq driver yet, so nothing to
+	 * throttle. 130 C is the BSP's cpu-crit.
+	 */
+	thermal-zones {
+		cpu-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <1000>;
+			thermal-sensors = <&cpu_tm>;
+
+			trips {
+				cpu-crit {
+					temperature = <130000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+		};
+	};
+};
+
+/* The sensor next to the CPUs; the wrapper syscon does not claim its range. */
+&scpu_wrapper {
+	cpu_tm: thermal-sensor@150 {
+		compatible = "realtek,rtd1295-thermal";
+		reg = <0x150 0x20>;
+		#thermal-sensor-cells = <0>;
+	};
 };
 
 /*

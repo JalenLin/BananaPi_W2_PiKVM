@@ -61,6 +61,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Keyboard, mouse | done | through kvmd to the target | §10 |
 | Virtual media (MSD) | done | image upload and connect through kvmd | §10 |
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
+| Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Critical trip at 130 C, nothing to throttle | `docs/09` §15 |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
 
 Not done:
@@ -71,10 +72,9 @@ Not done:
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
 - **The board's own HDMI output**: no driver; the console is the serial port
   and the network. PiKVM itself does not need it.
-- **Temperature**: no thermal driver, `/sys/class/thermal` is empty. kvmd
-  logs "Can't read CPU temp" every 5 s and the Web UI shows none.
 - **CPU frequency scaling**: no cpufreq driver; the CPUs stay at the clock
-  the boot loader set.
+  the boot loader set. So the thermal zone has no cooling device either:
+  it only shuts the board down at its critical trip.
 - **eMMC HS200**: the eMMC runs at High Speed (52 MHz, 38 MB/s read); HS200
   would need the BSP's phase tuning (§5 of this file).
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
@@ -169,6 +169,7 @@ cannot be unloaded.
 | 0012 | The CODA980 (VE1) in the `coda` driver |
 | 0013 | Hooks for the audio CPU and HDMI audio drivers |
 | 0014 | The eMMC host |
+| 0015 | The thermal sensor |
 
 ### Out-of-tree files (`kernel/mainline`), copied in at build time
 
@@ -176,7 +177,7 @@ cannot be unloaded.
 |---|---|
 | `rtd1296-bananapi-w2.dts` | The board: reserved memory for the Realtek firmware, every device |
 | `bpiw2.config` | The config fragment on top of arm64 defconfig |
-| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014 |
+| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c`, `rtd129x-thermal.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014, 0015 |
 | `hdmirx/` | The HDMI receiver: Realtek's BSP driver with a new V4L2 side |
 | `acpu/` | `rtd129x-acpu` (RPC to the audio CPU firmware) and `snd-rtd129x-hdmirx` (ALSA capture) |
 | `diag/` | A diagnostic initramfs used during bring-up |

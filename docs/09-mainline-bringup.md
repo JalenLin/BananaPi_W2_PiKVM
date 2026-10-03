@@ -177,6 +177,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11 |
 | **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
 | **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14 |
+| **Thermal** | the CPU temperature sensor | **done** 2026-10-03: `thermal_zone0`, shown by kvmd -- see §15 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1946,7 +1947,41 @@ written onto that card from the eMMC system and booted. So an SD card can
 be a data disk -- PiKVM's MSD images, say -- on a board whose system is
 the eMMC.
 
-## 15. Sources
+## 15. Temperature
+
+kvmd logged "Can't read CPU temp" every 5 s: there was no thermal driver,
+and `/sys/class/thermal` was empty.
+
+The BSP's `drivers/thermal/realtek/sensor-rtd129x.c` is short. The DT
+lists two sensors with the same register layout, one at `0x9801d150` (in
+the SCPU wrapper, next to the CPUs) and one at `0x980124b4` (inside the
+eMMC wrapper). Read with `/dev/mem` on a running board, both status words
+of both were zero: the boot loader leaves the sensors stopped. Writing the
+BSP's reset pulse to the first one's CTRL2 (`0x01904001`, then
+`0x01924001`, then 25 ms) started it:
+
+```
+STATUS1   STATUS2   C
+0x10cdc   0xfd0da   67.2
+0x10a76   0xfc6c0   66.6
+```
+
+STATUS1 is a signed 19-bit value in 1/1024 C; STATUS2 reads 0 or
+`0x3fffff` while the sensor is not running, which the driver treats as a
+reason to reset it again, as the BSP does. The second sensor was left
+alone: it sits in a range the eMMC driver owns, and the CPU one is the one
+that matters.
+
+`kernel/mainline/rtd129x-thermal.c` is that, on the mainline thermal
+framework: a child node of the `scpu_wrapper` syscon (which does not claim
+its range, so the driver can map its own 32 bytes), a `cpu-thermal` zone
+with one critical trip at the BSP's 130 C, and hwmon on top. No passive
+trips and no cooling map: without cpufreq there is nothing to throttle.
+
+Verified: `thermal_zone0` (`cpu-thermal`) reads 67-72 C with the capture
+running, kvmd's `/api/info` reports `temp.cpu`, and its log is quiet.
+
+## 16. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -1958,6 +1993,7 @@ the eMMC.
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtd129x_spin_table.c` | How the secondary CPUs are released |
 | `Fireblossom/wd-mch-kernel` @ `947374d` (`linux-6.18.40/drivers/net/ethernet/realtek/r8169soc.c`) | The 6.18 port of Realtek's `r8169soc.c` that M2 starts from |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_chip.c` | Where the chip revision lives |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/thermal/realtek/sensor-rtd129x.c` | The thermal sensor's registers, reset pulse and scaling |
 | `vendor/bpi-w2-bsp/u-boot-rtk/include/configs/rtd1295_common.h` | `CONFIG_ETHADDR`, the MAC every board shares |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_ve/ve1/ve1.c` | VE1 power-on and the wrapper setup |
 | `BPI-SINOVOIP/BPI-1296-Android7` @ `d377aa6` | `ve1.bin`; `libvpu.so` and the `vpuapi` headers (CODA980 register use) |
