@@ -17,20 +17,27 @@ All of the following was verified on the board (BPI-W2, 2 GiB, Kodi on a
 Raspberry Pi 3 as the HDMI source, a PC on the Type-C port) on 2026-10-01;
 the eMMC rows on 2026-10-02/03.
 
-**Release check, 2026-10-03** (`kernel-6.18` @ `3b99198`): both images
-rebuilt from the tree, checked for keys (none) and content, and booted from
-a fresh write -- the SD image `dd`'d on a PC, the eMMC image installed by
-the `bpikvm-install-emmc` that the SD image carries. On each of the three
-boot paths -- SD card through its own u-boot (SW4 = 1), SD card through the
-eMMC's u-boot (SW4 = 0), eMMC alone -- the first boot grew the root and
-made the host keys, no unit failed, and capture (1080p), the stream,
-HDMI audio (`arecord`) and keyboard/mouse (`configured`) all worked.
+**Release check, 2026-10-03** (`kernel-6.18` @ `40f058e`): both images
+rebuilt from the tree, inspected (no keys of any kind; partitions, labels,
+fstab, motd, tools, and the driver fixes present in both the kernel and
+the modules) and booted from a fresh write -- the SD image `dd`'d from the
+build machine onto the card, the eMMC image installed by the
+`bpikvm-install-emmc` the SD image carries, each read back and compared.
 
-The SD driver change that followed (`6f4f501`, the card's power and the
-controller no longer left to u-boot) was verified from the eMMC system on
-a 236 GiB card: found when inserted after boot and when in at power-on,
-ext4 at 50 MHz 4-bit, 512 MiB written and read back equal, and then the
-SD image written onto it from that same eMMC system and booted.
+All three boot paths passed, each with its own first boot (partition grown,
+host keys made), no failed unit, 1080p capture, a kvmd snapshot, HDMI audio
+through `arecord`, and the HID gadget `configured`:
+
+| Path | Verified by |
+|---|---|
+| SD card, its own u-boot (SW4 = 1) | bootargs with `rootfstype=ext4 sdmmc_on=1`, root on `mmcblk0p2`, ISO partition grown to 232 GiB |
+| SD card, the eMMC's u-boot (SW4 = 0, card in) | bootargs from the saved environment's `bootsd`, same root, SD bus tuned to 50 MHz 4-bit |
+| eMMC alone (SW4 = 0, no card) | root on `mmcblk1p2` grown to 6.8 GiB, no `mmcblk0` |
+
+kvmd uploaded ISOs onto the store through its API on both images (16 MiB
+and 8 MiB, md5 compared), and `bpikvm-msd-sd` set up a card for the eMMC
+system, handed it to kvmd and undid it again. The SD card from the eMMC
+system reads at 29.7 MB/s (4-bit, 50 MHz).
 
 | Feature | State | How it was verified | Where |
 |---|---|---|---|
