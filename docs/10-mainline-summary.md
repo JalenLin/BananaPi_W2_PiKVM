@@ -270,8 +270,13 @@ AUDIO entry of the vendor firmware table at 0x620000 (a copy at 0x628000)
 the uImage slot: the audio CPU ran a piece of the kernel and every audio
 RPC timed out. `bpikvm-emmc-bootsync` points the entry at the
 bluecore.audio slot (offset, length, sha256, and the table's checksum, a
-byte sum), and `emmcload` does not read that slot: reading it again lands
-on the running firmware and kills it.
+byte sum), and neither `emmcload` nor `bpiload` (the SD card's files)
+loads bluecore.audio: loading it again lands on the running firmware and
+kills it. A board with this boot loader but no eMMC system needs
+`bpikvm-emmc-bootsync --force` once from its SD card system, so that the
+entry points at a firmware this kernel knows. A boot stopped at the
+u-boot prompt (Esc, `ubstop.py`) also leaves the audio CPU dead until the
+next boot.
 
 `bpikvm-emmc-bootsync` fills them from `/boot`, writing only what
 changed. On a system running from the eMMC it runs whenever the boot

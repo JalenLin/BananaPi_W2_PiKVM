@@ -5,6 +5,9 @@
 #       python:3-slim sh -c "grep -v '^#' /t/uboot-env.txt | xargs -d '\n' python3 -u /t/ubstop.py"
 #   and reboot the board while it waits for the prompt -- or paste them by hand
 #
+# Stopping at the prompt (Esc) leaves the audio CPU dead for that boot: HDMI
+# audio needs a boot that runs straight through.
+#
 # Single quotes throughout: this u-boot's hush expands ${...} inside double
 # quotes when the variable is set, not when it runs. There is no `boot`
 # command; `run bootcmd` boots.
@@ -16,7 +19,9 @@ setenv audio_loadaddr 0x0f900000
 setenv initrd_high 0xffffffffffffffff
 setenv console_args 'earlycon=uart8250,mmio32,0x98007800 fbcon=map:0 console=ttyS0,115200 loglevel=7'
 setenv bpidir bananapi/bpi-w2/linux
-setenv bpiload 'fatload ${bdev} 0:1 0x02100000 ${bpidir}/bpi-w2.dtb && fatload ${bdev} 0:1 0x0f900000 ${bpidir}/bluecore.audio && fatload ${bdev} 0:1 0x03000000 ${bpidir}/uImage && fatload ${bdev} 0:1 0x31400000 ${bpidir}/uInitrd'
+# No bluecore.audio from the SD card either, for the reason given at
+# emmcload below: the audio CPU already runs the copy in the eMMC's slot.
+setenv bpiload 'fatload ${bdev} 0:1 0x02100000 ${bpidir}/bpi-w2.dtb && fatload ${bdev} 0:1 0x03000000 ${bpidir}/uImage && fatload ${bdev} 0:1 0x31400000 ${bpidir}/uInitrd'
 setenv bpiboot 'go a; booti 0x03000000 0x31400000 0x02100000'
 setenv bootsd 'setenv bdev sd; setenv bootargs ${console_args} root=/dev/mmcblk0p2 rw rootwait; run bpiload && run bpiboot'
 # No bluecore.audio here: this u-boot has already loaded it (from the
