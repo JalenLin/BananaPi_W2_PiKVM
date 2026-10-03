@@ -2103,7 +2103,40 @@ Verified:
   all-core load runs at about 1.25 GHz; bursts at 1.4 GHz.
 - Capture, the kvmd snapshot, HID, HDMI audio and every unit as before.
 
-## 17. Sources
+## 17. CMA: 32 MiB was not enough
+
+Every boot logged, twice,
+
+```
+cma: __cma_alloc: reserved: alloc failed, req-size: 765 pages, ret: -16
+cma: range 0: +5@219+12@244+10@374+70@442+3@1277 ... +259@7933
+=> 793 free of 8192 total pages
+```
+
+and nothing visibly failed. The journal places it 30 ms after ustreamer's
+"H264: Encoder is ready", on the first stream after the boot -- the only
+one that sets the encoder up. 765 pages is a 1920x1088 NV12 frame: the
+H.264 encoder's (coda's) two reference frames, after ustreamer's five
+capture buffers of the same size and the receiver's scratch buffer.
+
+Measured with `CmaFree`: the first stream after a boot takes 33.3 MiB of
+CMA, on top of the 1.6 MiB the audio CPU's buffers hold from the start --
+about 35 MiB, against arm64 defconfig's `CONFIG_CMA_SIZE_MBYTES=32`. So
+the last two allocations failed on every boot, and the DMA layer fell back
+to the page allocator for a 4 MiB block, which happened to be there. On a
+board that has been up long enough for memory to fragment, it might not
+be, and the stream would not start.
+
+`bpiw2.config` sets 128 MiB. CMA that no driver holds still serves
+movable allocations, so `MemAvailable` hardly moves (1.38 GB either way).
+
+Verified with 128 MiB: no failure on the first stream after a boot (95 MiB
+of CMA left at its peak); none with RAM and CMA filled by a 1.25 GB
+allocation (which the OOM killer then took, mid-allocation) and three
+streams started and stopped; none with the CPU stress test followed by a
+stream, the sequence that had logged it.
+
+## 18. Sources
 
 | Source | Used for |
 |--------|----------|

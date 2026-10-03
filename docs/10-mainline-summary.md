@@ -82,9 +82,6 @@ Not done:
 
 Seen, not yet looked into:
 
-- `cma: __cma_alloc: reserved: alloc failed, req-size: 765 pages, ret: -16`
-  (twice per boot so far, around when capture buffers are set up);
-  nothing has failed with it.
 - `r8169 98016000.ethernet eth0: rtl_csiar_cond == 0/1` lines from the
   Ethernet driver while the link comes up; the link works.
 
