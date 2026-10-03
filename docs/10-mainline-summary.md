@@ -39,12 +39,34 @@ system and eMMC system, both through the eMMC's u-boot), on 2026-10-03.
 
 Not done:
 
-- **eMMC HS200**: the eMMC runs at High Speed (52 MHz); HS200 would need
-  the BSP's phase tuning (§5 of this file).
-- **ATX power control**: not wired on this board.
-- **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
+- **The images, rebuilt and flashed from scratch.** The fixes of
+  2026-10-03 (capture and audio after the eMMC's u-boot) were verified on a
+  running board, pushed with `push-kernel-mainline.sh`; neither image has
+  since been rebuilt from the tree and booted from a fresh flash.
+- **An eMMC install without the serial port.** Each board needs the eMMC
+  boot loader flashed (`romflash.py`) and its u-boot environment set
+  (`uboot-env.txt` through `ubstop.py`) over the serial console once,
+  before `bpikvm-install-emmc` gives a bootable eMMC (§5).
 - **The board's own HDMI output**: no driver; the console is the serial port
-  and the network.
+  and the network. PiKVM itself does not need it.
+- **Temperature**: no thermal driver, `/sys/class/thermal` is empty. kvmd
+  logs "Can't read CPU temp" every 5 s and the Web UI shows none.
+- **CPU frequency scaling**: no cpufreq driver; the CPUs stay at the clock
+  the boot loader set.
+- **eMMC HS200**: the eMMC runs at High Speed (52 MHz, 38 MB/s read); HS200
+  would need the BSP's phase tuning (§5 of this file).
+- **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
+- **ATX power control**: not wired on this board.
+- **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers. The
+  hwnat survey is in `docs/06-changes.md` §11 (on `main`).
+
+Seen, not yet looked into:
+
+- `cma: __cma_alloc: reserved: alloc failed, req-size: 765 pages, ret: -16`
+  (twice per boot so far, around when capture buffers are set up);
+  nothing has failed with it.
+- `r8169 98016000.ethernet eth0: rtl_csiar_cond == 0/1` lines from the
+  Ethernet driver while the link comes up; the link works.
 
 ## 2. Building
 
