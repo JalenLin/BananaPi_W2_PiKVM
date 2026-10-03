@@ -174,10 +174,14 @@ Two things worth knowing before they surprise anyone:
 - **A boot stopped at the u-boot prompt has no HDMI audio** until the next
   normal boot: that u-boot starts the audio firmware on its way past, and
   stopping interrupts it.
-- **With an SD card in, the eMMC's u-boot reads its environment from the
-  card**, which has none, and falls back to its built-in default. That
-  default boots the SD card, which is what is wanted, but it means the
-  environment of §3 only applies when no card is in.
+- **Which u-boot runs, and with which environment, follows SW4.** SW4 = 1
+  loads u-boot from the SD card (the one `make uboot` builds). Its
+  environment would live in the card's factory area, which the image does
+  not write, so it runs on its compiled-in default: the card's own files,
+  with the bootargs of `docs/03`. SW4 = 0 loads the eMMC's u-boot, which
+  does have the saved environment of §3 -- the one that tries the SD card
+  and then the eMMC. So the commands of §3 (`bootemmc` and the rest) exist
+  only on the SW4 = 0 path; at the SW4 = 1 prompt they are "not defined".
 
 ## 7. What is not there
 
