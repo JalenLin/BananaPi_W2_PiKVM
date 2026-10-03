@@ -1,0 +1,68 @@
+#!/bin/bash
+# Grow the last partition of the boot disk, and its filesystem, to fill the
+# card or the eMMC.
+#
+# The image is only as large as it has to be, so the rest of the medium would
+# go unused. bpikvm-firstboot.service calls this on the first boot, and it can
+# be re-run by hand (it does nothing if there is nothing left to take).
+#
+# Which partition that is depends on the image:
+#
+#   SD image    p1 boot, p2 root (fixed), p3 the ISO store -> p3 grows
+#   eMMC image  p1 boot, p2 root           (last)          -> root grows
+#
+# Growing the root filesystem is done online. The ISO store is mounted
+# read-only (see /etc/fstab), which online resize2fs cannot do, so it is
+# unmounted around the resize and mounted again afterwards.
+#
+# The device name is not hardcoded: the same image may boot from SD
+# (mmcblk0), the eMMC (mmcblk1) or USB (sda).
+set -eu
+
+ROOT_PART="$(findmnt -n -o SOURCE / || true)"
+case "$ROOT_PART" in
+    /dev/*) ;;
+    *) echo "root is not a block device ('$ROOT_PART'), skipping expansion"; exit 0 ;;
+esac
+
+PKNAME="$(lsblk -no PKNAME "$ROOT_PART" 2>/dev/null | head -1 | tr -d ' ')"
+[ -n "$PKNAME" ] || { echo "cannot find the parent device of $ROOT_PART, skipping expansion"; exit 0; }
+DISK="/dev/$PKNAME"
+
+# The highest-numbered partition of that disk is the one with room after it
+NUM=0
+for f in "/sys/class/block/$PKNAME"/*/partition; do
+    [ -r "$f" ] || continue
+    n="$(cat "$f")"
+    [ "$n" -gt "$NUM" ] && { NUM="$n"; NAME="$(basename "$(dirname "$f")")"; }
+done
+[ "$NUM" -gt 0 ] || { echo "no partitions on $DISK, skipping expansion"; exit 0; }
+PART="/dev/$NAME"
+
+echo "disk=$DISK  last partition=$PART ($NUM)  root=$ROOT_PART"
+MNT="$(findmnt -n -o TARGET -S "$PART" || true)"
+echo "before: $(df -h "${MNT:-/}" | awk 'NR==2{print $2" total, "$4" free"}') on ${MNT:-(not mounted)}"
+
+# growpart exit codes: 0 = changed, 1 = no change needed (NOCHANGE), 2 = failed
+rc=0
+growpart "$DISK" "$NUM" || rc=$?
+case "$rc" in
+    0) partx -u "$DISK" || true; udevadm settle 2>/dev/null || true ;;
+    1) echo "partition is already at maximum size" ;;
+    *) echo "growpart failed (rc=$rc)" >&2; exit "$rc" ;;
+esac
+
+# Even when the partition did not change, the filesystem may still be short
+# (for instance if a previous run was interrupted halfway).
+if [ "$PART" = "$ROOT_PART" ]; then
+    resize2fs "$PART"
+else
+    # The ISO store: resize it offline, then put it back as fstab says
+    [ -z "$MNT" ] || umount "$MNT"
+    e2fsck -fp "$PART" || true	# resize2fs refuses without a clean check
+    resize2fs "$PART"
+    [ -z "$MNT" ] || mount "$MNT"
+fi
+
+MNT="$(findmnt -n -o TARGET -S "$PART" || true)"
+echo "after : $(df -h "${MNT:-/}" | awk 'NR==2{print $2" total, "$4" free"}') on ${MNT:-(not mounted)}"

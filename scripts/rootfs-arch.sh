@@ -186,9 +186,12 @@ done
 # /etc/hostname, /etc/hosts and /etc/resolv.conf are bind-mounted by docker;
 # build-rootfs-arch.sh adds them after the export.
 
-# LABELs, not device nodes: the same image may boot from SD or USB. The
-# third line is kvmd's MSD storage, a directory on the rootfs bind-mounted
-# read-only (see /usr/lib/kvmd/main.yaml and patches/kvmd/0002).
+# A starting point only: scripts/build-image.sh writes the image's own
+# /etc/fstab over this one, with that image's labels and its ISO store --
+# a partition of its own on the SD image, a directory on the rootfs on the
+# eMMC one (see /usr/lib/kvmd/main.yaml and patches/kvmd/0002).
+#
+# LABELs, not device nodes: the same image may boot from SD, the eMMC or USB.
 cat > /etc/fstab <<EOF
 LABEL=BPI-ROOT  /      ext4  defaults,noatime         0 1
 LABEL=BPI-BOOT  /boot  vfat  defaults,noatime,nofail  0 2

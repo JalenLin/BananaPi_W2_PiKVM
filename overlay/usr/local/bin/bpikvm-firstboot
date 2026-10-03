@@ -11,11 +11,12 @@ set -eu
 
 STAMP=/var/lib/bpikvm/firstboot-done
 
-# Grow root to fill the card first. A failure here must not block key
-# generation -- without keys the machine is unreachable, whereas an unexpanded
-# card merely has less space. Those are not equally serious.
-if ! /usr/local/bin/bpikvm-expand-rootfs; then
-    echo "warning: root expansion failed; run bpikvm-expand-rootfs by hand later" >&2
+# Grow the last partition to fill the medium first -- root, or the ISO store
+# where the image has one. A failure here must not block key generation:
+# without keys the machine is unreachable, whereas an unexpanded card merely
+# has less space. Those are not equally serious.
+if ! /usr/local/bin/bpikvm-expand; then
+    echo "warning: expansion failed; run bpikvm-expand by hand later" >&2
 fi
 
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then

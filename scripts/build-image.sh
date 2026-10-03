@@ -7,6 +7,10 @@
 #   sector 204800..        p1 vfat  "BPI-BOOT"  -- 60 MiB, grown if the staged
 #                                                  boot files need more
 #   after p1               p2 ext4  rootfs
+#   after p2               p3 ext4  "BPI-MSD" -- kvmd's virtual media store
+#                                     (the mainline SD image only, as PiKVM's
+#                                     own images do it); root is then a fixed
+#                                     size and p3 grows to fill the card
 #
 # The eMMC image has the same partitions, labelled EMMC-BOOT and EMMC-ROOT so
 # that a board with both never mixes them up, and nothing before p1 but the
@@ -59,6 +63,21 @@ echo ">>> target: $TARGET"
 
 IMG_MB=3072          # total size
 P1_START=204800      # sector
+ROOT_MB=0            # 0: the rootfs takes the rest of the image
+MSD_LABEL=
+
+# PiKVM keeps its virtual media on a partition of its own, so that filling it
+# with ISOs cannot fill the root filesystem, and the user can see how much is
+# left for images. The mainline SD image does the same: root is a fixed size
+# and p3 takes the rest of the card (bpikvm-expand grows it on the first
+# boot). The eMMC image has no room to spare on a 7.3 GiB eMMC, so there the
+# store stays a directory on the rootfs, with an SD card as an option
+# (bpikvm-msd-sd). The BSP image keeps the layout verified on main.
+if [ "$TARGET" = sd ] && [ "$FLAVOUR" = mainline ]; then
+    IMG_MB=3584
+    ROOT_MB=3072
+    MSD_LABEL=BPI-MSD
+fi
 
 for f in "$BSP/u-boot-rtk/u-boot.bin" \
          "$KIMAGE" \
@@ -159,6 +178,45 @@ P1_SECTORS=$(( P1_MB * 2048 ))
 P2_START=$(( P1_START + P1_SECTORS ))
 echo ">>> boot partition: ${P1_MB} MiB (${staged_mb} MiB staged), rootfs starts at sector $P2_START"
 
+PART_TABLE="start=$P1_START, size=$P1_SECTORS, type=c, bootable"
+if [ -n "$MSD_LABEL" ]; then
+    P2_SECTORS=$(( ROOT_MB * 2048 ))
+    P3_START=$(( P2_START + P2_SECTORS ))
+    P3_SECTORS=$(( IMG_MB * 2048 - P3_START ))
+    [ "$P3_SECTORS" -gt 0 ] || { echo "no room left for the ISO partition" >&2; exit 1; }
+    PART_TABLE="$PART_TABLE
+start=$P2_START, size=$P2_SECTORS, type=83
+start=$P3_START, type=83"
+    echo ">>> rootfs: ${ROOT_MB} MiB, ISO store: $(( P3_SECTORS / 2048 )) MiB (grown on the first boot)"
+else
+    P2_SECTORS=$(( IMG_MB * 2048 - P2_START ))
+    P3_START=0
+    P3_SECTORS=0
+    PART_TABLE="$PART_TABLE
+start=$P2_START, type=83"
+fi
+
+# /etc/fstab. The rootfs builds write one for an SD card without an ISO
+# partition; this is the image's own, by label so that the same image may boot
+# from SD, the eMMC or USB.
+{
+    echo "LABEL=$ROOT_LABEL  /      ext4  defaults,noatime         0 1"
+    echo "LABEL=$BOOT_LABEL  /boot  vfat  defaults,noatime,nofail  0 2"
+    if [ -n "$MSD_LABEL" ]; then
+        # As PiKVM's own fstab: read-only, kvmd's remount helper takes it
+        # read-write while it writes an image. nofail: a board must boot even
+        # with this partition damaged or absent.
+        echo "LABEL=$MSD_LABEL  /var/lib/kvmd/msd  ext4  nodev,nosuid,noexec,ro,errors=remount-ro,nofail,X-kvmd.otgmsd-user=kvmd  0 2"
+    elif [ "$FLAVOUR" = mainline ]; then
+        # A directory on the rootfs, bind-mounted read-only. The source is a
+        # mount point of its own so that bpikvm-msd-sd can put an SD card
+        # under it; requires-mounts-for keeps the two in order.
+        echo "/var/lib/kvmd/msd.data  /var/lib/kvmd/msd  none  bind,nodev,nosuid,noexec,ro,X-kvmd.otgmsd-user=kvmd,x-systemd.requires-mounts-for=/var/lib/kvmd/msd.data  0 0"
+    else
+        echo "/var/lib/kvmd/msd.data  /var/lib/kvmd/msd  none  bind,nodev,nosuid,noexec,ro,X-kvmd.otgmsd-user=kvmd  0 0"
+    fi
+} > "$BUILD/fstab"
+
 rm -rf "$BUILD/overlay" "$BUILD/overlay-bsp"
 cp -r "$PROJECT_ROOT/overlay" "$BUILD/overlay"
 cp -r "$PROJECT_ROOT/overlay-bsp" "$BUILD/overlay-bsp"
@@ -181,6 +239,12 @@ case "$TARGET" in
     emmc) MOTD_TARGET="eMMC image (/boot is ${BOOT_LABEL}, / is ${ROOT_LABEL});
           u-boot boots raw copies of /boot, kept in step by bpikvm-emmc-bootsync" ;;
 esac
+if [ -n "$MSD_LABEL" ]; then
+    MOTD_MSD="/var/lib/kvmd/msd, a partition of its own (${MSD_LABEL})"
+else
+    MOTD_MSD="/var/lib/kvmd/msd, a directory on the root filesystem
+          \"bpikvm-msd-sd\" dedicates an SD card to it instead"
+fi
 cat > "$BUILD/motd" <<MOTD
 
   BPI-W2 PiKVM
@@ -188,6 +252,7 @@ cat > "$BUILD/motd" <<MOTD
   kernel  ${MOTD_KERNEL}
   rootfs  ${MOTD_ROOTFS}
   image   ${MOTD_TARGET}
+  ISOs    ${MOTD_MSD}
   built   ${GIT_BRANCH} @ ${GIT_REV}, $(date -u +%Y-%m-%d)
 
   Web UI    https://<this board's IP>/   admin / admin
@@ -223,8 +288,7 @@ truncate -s ${IMG_MB}M /b/$(basename "$OUT")
 sfdisk /b/$(basename "$OUT") <<EOF
 label: dos
 unit: sectors
-start=$P1_START, size=$P1_SECTORS, type=c, bootable
-start=$P2_START, type=83
+$PART_TABLE
 EOF
 
 # p1: vfat plus the boot files
@@ -260,12 +324,20 @@ install -m 644 /b/motd /b/rootfs/etc/motd
 # the rest when it builds it)
 mkdir -p /b/rootfs/etc/systemd/system/multi-user.target.wants
 ln -sf /etc/systemd/system/bpikvm-emmc-bootsync.path /b/rootfs/etc/systemd/system/multi-user.target.wants/
-# The rootfs's fstab mounts by label (the SD card's, BPI-*)
-sed -i 's/^LABEL=BPI-ROOT /LABEL=$ROOT_LABEL /; s/^LABEL=BPI-BOOT /LABEL=$BOOT_LABEL /' /b/rootfs/etc/fstab
-grep '^LABEL=' /b/rootfs/etc/fstab
-P2_SECTORS=\$(( ${IMG_MB} * 2048 - $P2_START ))
-truncate -s \$(( P2_SECTORS * 512 )) /b/p2.img
+install -m 644 /b/fstab /b/rootfs/etc/fstab
+cat /b/rootfs/etc/fstab
+truncate -s $(( P2_SECTORS * 512 )) /b/p2.img
 mkfs.ext4 -q -F -L $ROOT_LABEL -d /b/rootfs /b/p2.img
+
+# p3: kvmd's virtual media store, owned by kvmd so it can write images
+if [ $P3_SECTORS -gt 0 ]; then
+    owner=\$(grep '^kvmd:' /b/rootfs/etc/passwd | cut -d: -f3,4)
+    [ -n "\$owner" ] || { echo 'no kvmd user in the rootfs'; exit 1; }
+    truncate -s $(( P3_SECTORS * 512 )) /b/p3.img
+    mkfs.ext4 -q -F -L $MSD_LABEL -E root_owner=\$owner /b/p3.img
+    dd if=/b/p3.img of=/b/$(basename "$OUT") bs=512 seek=$P3_START conv=notrunc status=none
+    rm -f /b/p3.img
+fi
 
 # Write into the image
 dd if=/b/p1.img of=/b/$(basename "$OUT") bs=512 seek=$P1_START conv=notrunc status=none

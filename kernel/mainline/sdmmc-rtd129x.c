@@ -26,6 +26,7 @@
  * but slow.
  */
 
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -178,6 +179,9 @@ struct rtd129x_sdmmc {
 	void			*buf;
 	dma_addr_t		buf_phys;
 
+	bool			tuned;		/* the PLL phases suit this card */
+	bool			tuning;		/* a failure is expected: fail fast */
+
 	struct clk		*clk_cr;
 	struct clk		*clk_ip;
 	struct reset_control	*rstc;
@@ -207,6 +211,9 @@ static int rtd129x_get_cd(struct mmc_host *mmc)
  * 0x56 gives 100.1 MHz. The sequence (PLL held in reset around the change,
  * the core switched to its 4 MHz source meanwhile) is rtk_sdmmc_speed()'s.
  */
+#define CR_PLL_SD1		0x1e0
+#define  PLL_SD1_SEL3318	GENMASK(14, 13)
+#define  PLL_SD1_SEL3318_VAL	2
 #define CR_PLL_SD3		0x1e8
 #define CR_PLL_SD4		0x1ec
 #define PLL_SD3_100MHZ		0x00564388
@@ -216,6 +223,21 @@ static int rtd129x_get_cd(struct mmc_host *mmc)
 static void rtd129x_set_pll(struct rtd129x_sdmmc *host)
 {
 	u32 ckgen = readl(host->sd + CR_SD_CKGEN_CTL);
+
+	/*
+	 * SEL3318 is what the BSP sets to 2 when it takes a card to 1.8 V,
+	 * while deliberately leaving the pads themselves at 3.3 V ("keep IO
+	 * pad voltage at 3.3v for SD card compatibility" in its
+	 * rtk_sdmmc_switch_voltage()). Its u-boot leaves 1 after a plain
+	 * init and 2 once it has read a card at full speed.
+	 *
+	 * Measured on this board, at 50 MHz, with the drive strength above:
+	 * with 1 a 1-bit read works at every sampling phase and a 4-bit read
+	 * at none; with 2 both do. So 2 it is -- the value the board booted
+	 * from its SD card has always run with, since u-boot left it.
+	 */
+	regmap_update_bits(host->crt, CR_PLL_SD1, PLL_SD1_SEL3318,
+			   FIELD_PREP(PLL_SD1_SEL3318, PLL_SD1_SEL3318_VAL));
 
 	writel(ckgen | CKGEN_SRC_4MHZ, host->sd + CR_SD_CKGEN_CTL);
 	regmap_write(host->crt, CR_PLL_SD4, 0x6);
@@ -268,72 +290,6 @@ static void rtd129x_set_clock(struct rtd129x_sdmmc *host, unsigned int hz)
 	host->mmc->actual_clock = actual;
 }
 
-/*
- * Card power and pads. The card's supply goes through a switch whose control
- * pin, prob_2 (MISC GPIO 99), is left as an input: its pad pull decides --
- * down for on, up for off. The card reader's own pads have a function
- * register, on (0x33333323) or quiet (0x22223322), as the BSP's
- * rtk_sdmmc_card_power() sets them, and a drive strength.
- *
- * The BSP u-boot sets all of this when it reads the card, and this driver
- * used to depend on it: booted from the eMMC, where u-boot does not touch
- * the card, nothing here worked (the switch was off, the pads quiet).
- */
-#define PAD_PFUNC_CR		0x10
-#define  PFUNC_CR_ON		0x33333323
-#define  PFUNC_CR_OFF		0x22223322
-#define PAD_PCONF_PROB		0x18	/* prob_2 in bits 23:20 */
-#define  PROB2_PULL_EN		BIT(21)
-#define  PROB2_PULL_UP		BIT(20)
-#define PAD_DRIVE0		0x34
-#define PAD_DRIVE1		0x38
-
-static void rtd129x_power(struct rtd129x_sdmmc *host, unsigned char mode)
-{
-	u32 pconf;
-
-	if (!host->pad || mode == host->power_mode || mode == MMC_POWER_ON)
-		return;
-	pconf = readl(host->pad + PAD_PCONF_PROB) | PROB2_PULL_EN;
-	if (mode == MMC_POWER_UP) {
-		writel(PFUNC_CR_ON, host->pad + PAD_PFUNC_CR);
-		writel(0x0000bbbb, host->pad + PAD_DRIVE0);
-		writel(0xbbbbbbbb, host->pad + PAD_DRIVE1);
-		writel(pconf & ~PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
-		msleep(10);		/* the BSP's delay after power on */
-	} else {
-		writel(PFUNC_CR_OFF, host->pad + PAD_PFUNC_CR);
-		writel(pconf | PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
-	}
-	host->power_mode = mode;
-	dev_dbg(host->dev, "card power %s\n", mode == MMC_POWER_UP ? "on" : "off");
-}
-
-static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
-{
-	struct rtd129x_sdmmc *host = mmc_priv(mmc);
-	u8 cfg1;
-
-	rtd129x_power(host, ios->power_mode);
-
-	cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_CFG1_BUS_WIDTH_MASK;
-	switch (ios->bus_width) {
-	case MMC_BUS_WIDTH_8:
-		cfg1 |= SD_CFG1_BUS_WIDTH_8;
-		break;
-	case MMC_BUS_WIDTH_4:
-		cfg1 |= SD_CFG1_BUS_WIDTH_4;
-		break;
-	default:
-		cfg1 |= SD_CFG1_BUS_WIDTH_1;
-		break;
-	}
-	writeb(cfg1, host->sd + SD_CONFIGURE1);
-	rtd129x_sync(host);
-
-	if (ios->clock)
-		rtd129x_set_clock(host, ios->clock);
-}
 
 /*
  * SD_CONFIGURE2/3 for a command. This is the rule behind the BSP's per-opcode
@@ -515,7 +471,7 @@ static int rtd129x_send_cmd(struct rtd129x_sdmmc *host,
 	writeb(SD_TRANSFER_START | SD_SENDCMDGETRSP, host->sd + SD_TRANSFER);
 	rtd129x_sync(host);
 
-	ret = rtd129x_wait(host, 1000);
+	ret = rtd129x_wait(host, host->tuning ? 50 : 1000);
 	if (ret) {
 		dev_dbg(host->dev, "cmd%u: %d (isr 0x%02x, status1 0x%02x, xfer 0x%02x)\n",
 			cmd->opcode, ret, host->isr,
@@ -622,7 +578,7 @@ static int rtd129x_xfer(struct rtd129x_sdmmc *host, struct mmc_request *mrq)
 	writeb(SD_TRANSFER_START | tm, host->sd + SD_TRANSFER);
 	rtd129x_sync(host);
 
-	ret = rtd129x_wait(host, 2000);
+	ret = rtd129x_wait(host, host->tuning ? 50 : 2000);
 	writel(0, host->sd + CR_SD_DMA_CTL3);
 	if (ret) {
 		dev_dbg(host->dev, "cmd%u data %zu%s: %d (isr 0x%02x, status1 0x%02x, xfer 0x%02x)\n",
@@ -672,41 +628,6 @@ static void rtd129x_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	mrq->cmd->error = ret;
 
 	mmc_request_done(mmc, mrq);
-}
-
-static const struct mmc_host_ops rtd129x_ops = {
-	.request	= rtd129x_request,
-	.set_ios	= rtd129x_set_ios,
-	.get_cd		= rtd129x_get_cd,
-};
-
-static irqreturn_t rtd129x_irq(int irq, void *dev_id)
-{
-	struct rtd129x_sdmmc *host = dev_id;
-	u32 isr;
-	u8 pend;
-
-	/*
-	 * Card insert/remove shares the line. It is disabled at init because
-	 * detection is polled, but if it ever latches, acknowledge it rather
-	 * than leave a level interrupt asserted.
-	 */
-	pend = readb(host->sd + CARD_INT_PEND) & CARD_INT_ALL;
-	if (pend)
-		writeb(pend, host->sd + CARD_INT_PEND);
-
-	isr = readl(host->sd + CR_SD_ISR) & ISR_ALL;
-	if (!isr)
-		return pend ? IRQ_HANDLED : IRQ_NONE;
-
-	/* Bit 0 clear: this clears the given bits, see ISR_WRITE_DATA. */
-	writel(isr, host->sd + CR_SD_ISR);
-
-	host->isr |= isr;
-	if (isr & (host->wait_for | ISR_CARD_ERR))
-		complete(&host->done);
-
-	return IRQ_HANDLED;
 }
 
 static void rtd129x_hw_init(struct rtd129x_sdmmc *host)
@@ -767,6 +688,267 @@ static void rtd129x_hw_init(struct rtd129x_sdmmc *host)
 	dev_dbg(host->dev, "card int en 0x%02x pend 0x%02x\n",
 		readb(host->sd + CR_SD_INT_EN), readb(host->sd + CARD_INT_PEND));
 }
+
+/*
+ * Card power and pads. The card's supply goes through a switch whose control
+ * pin, prob_2 (MISC GPIO 99), is left as an input: its pad pull decides --
+ * down for on, up for off. The card reader's own pads have a function
+ * register, on (0x33333323) or quiet (0x22223322), as the BSP's
+ * rtk_sdmmc_card_power() sets them, and a drive strength.
+ *
+ * The BSP u-boot sets all of this when it reads the card, and this driver
+ * used to depend on it: booted from the eMMC, where u-boot does not touch
+ * the card, nothing here worked (the switch was off, the pads quiet).
+ */
+#define PAD_PFUNC_CR		0x10
+#define  PFUNC_CR_ON		0x33333323
+#define  PFUNC_CR_OFF		0x22223322
+#define PAD_PCONF_PROB		0x18	/* prob_2 in bits 23:20 */
+#define  PROB2_PULL_EN		BIT(21)
+#define  PROB2_PULL_UP		BIT(20)
+/*
+ * Drive strength. The BSP's rtk_sdmmc_hw_initial() writes 0x3333/0x33333333
+ * on this SoC and its u-boot writes these when it takes a card to a UHS mode.
+ * Measured here: with the BSP's values a 1-bit read at 50 MHz works at any
+ * sampling phase and a 4-bit one never does, whatever the phase, which is
+ * what the board booted from its SD card has always run with.
+ */
+#define PAD_DRIVE0		0x34
+#define  PAD_DRIVE0_VAL		0x0000bbbb
+#define PAD_DRIVE1		0x38
+#define  PAD_DRIVE1_VAL		0xbbbbbbbb
+
+static void rtd129x_power(struct rtd129x_sdmmc *host, unsigned char mode)
+{
+	u32 pconf;
+
+	if (!host->pad || mode == host->power_mode || mode == MMC_POWER_ON)
+		return;
+	pconf = readl(host->pad + PAD_PCONF_PROB) | PROB2_PULL_EN;
+	if (mode == MMC_POWER_UP) {
+		writel(PFUNC_CR_ON, host->pad + PAD_PFUNC_CR);
+		writel(PAD_DRIVE0_VAL, host->pad + PAD_DRIVE0);
+		writel(PAD_DRIVE1_VAL, host->pad + PAD_DRIVE1);
+		writel(pconf & ~PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
+		msleep(10);		/* the BSP's delay after power on */
+		/*
+		 * Start the core over, as the BSP's hw_reset does. Without
+		 * this the first power cycle the MMC core asks for -- its
+		 * recovery after any failed transfer -- left the core unable
+		 * to read a response through its DMA again (CMD2 then failed
+		 * with a CRC error for good, and the card was dropped).
+		 */
+		rtd129x_hw_init(host);
+		if (host->crt)
+			rtd129x_set_pll(host);
+	} else {
+		writel(PFUNC_CR_OFF, host->pad + PAD_PFUNC_CR);
+		writel(pconf | PROB2_PULL_UP, host->pad + PAD_PCONF_PROB);
+	}
+	host->power_mode = mode;
+	dev_dbg(host->dev, "card power %s\n", mode == MMC_POWER_UP ? "on" : "off");
+}
+
+/*
+ * The SD PLL's two phases (PLL_SD1) decide when the core drives the bus and
+ * when it samples the card. At 50 MHz the reset values do not work: the first
+ * data read fails its CRC and the core drops the card. The BSP's u-boot tunes
+ * them whenever it reads a card, and this driver used to inherit that -- so
+ * high speed worked on a board booted from the card and failed on one booted
+ * from the eMMC, where u-boot leaves both phases at 0.
+ *
+ * Tuning is the BSP's (rtk_sdmmc_tuning_tx/rx): step a phase through all 32
+ * positions, try the bus at each, and settle in the middle of the longest run
+ * that worked. TX is checked with CMD13, which the card cannot answer if what
+ * it receives is garbled; RX with a single-block read, whose CRC the core
+ * checks for us. The MMC core only asks for tuning in the UHS modes, which
+ * need 1.8 V and are not supported here, so this runs itself -- once, when
+ * the clock first goes above 25 MHz, with the card selected and idle.
+ */
+#define  PLL_SD1_PHRT0		BIT(1)		/* 0 while a phase changes */
+#define  PLL_SD1_TX		GENMASK(7, 3)
+#define  PLL_SD1_RX		GENMASK(12, 8)
+#define SD_PHASES		32
+
+static void rtd129x_set_phase(struct rtd129x_sdmmc *host, u32 mask, u8 phase)
+{
+	u32 val;
+
+	regmap_read(host->crt, CR_PLL_SD1, &val);
+	regmap_write(host->crt, CR_PLL_SD1, val & ~PLL_SD1_PHRT0);
+	val = (val & ~(mask | PLL_SD1_PHRT0)) | (phase << (ffs(mask) - 1));
+	regmap_write(host->crt, CR_PLL_SD1, val);
+	regmap_write(host->crt, CR_PLL_SD1, val | PLL_SD1_PHRT0);
+	udelay(100);
+	rtd129x_sync(host);
+}
+
+/* The middle of the longest run of set bits, as a ring; -1 if there is none */
+static int rtd129x_best_phase(u32 map)
+{
+	int i, start = -1, len = 0, best_start = 0, best_len = 0;
+
+	if (map == GENMASK(SD_PHASES - 1, 0))
+		return 0;	/* every phase works: the BSP picks 0 too */
+	for (i = 0; i < SD_PHASES * 2; i++) {
+		if (map & BIT(i % SD_PHASES)) {
+			if (start < 0)
+				start = i;
+			if (++len > best_len && len <= SD_PHASES) {
+				best_len = len;
+				best_start = start;
+			}
+		} else {
+			start = -1;
+			len = 0;
+		}
+	}
+	if (!best_len)
+		return -1;
+	return (best_start + best_len / 2) % SD_PHASES;
+}
+
+static int rtd129x_read_block0(struct rtd129x_sdmmc *host, void *buf)
+{
+	struct mmc_data data = {
+		.blksz = 512, .blocks = 1, .flags = MMC_DATA_READ, .sg_len = 1,
+	};
+	struct mmc_command cmd = {
+		.opcode = MMC_READ_SINGLE_BLOCK, .arg = 0,
+		.flags = MMC_RSP_R1 | MMC_CMD_ADTC, .data = &data,
+	};
+	struct mmc_request mrq = { .cmd = &cmd, .data = &data };
+	struct scatterlist sg;
+
+	sg_init_one(&sg, buf, 512);
+	data.sg = &sg;
+	return rtd129x_xfer(host, &mrq);
+}
+
+static void rtd129x_tune(struct rtd129x_sdmmc *host)
+{
+	int rx = -1, tx = -1, i, try;
+	u32 val, rx_map = 0;
+	void *buf;
+
+	buf = kmalloc(512, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	/*
+	 * A read tests both directions at once -- the command has to reach the
+	 * card and the data has to come back -- so there is no need for a
+	 * command-only test, which would need the card's address and that is
+	 * not known here during identification.
+	 *
+	 * The RX phase is what usually has to be found, so scan all 32 of
+	 * those for a given TX phase: first the one the boot loader left (the
+	 * one it settled on, if it tuned), then every fourth, which is as
+	 * coarse as a 32-step ring tolerates. A failing read has to time out,
+	 * so keep that short while scanning.
+	 */
+	regmap_read(host->crt, CR_PLL_SD1, &val);
+	host->tuning = true;
+	for (try = 0; try < 1 + SD_PHASES / 4 && !rx_map; try++) {
+		tx = try ? (try - 1) * 4 : FIELD_GET(PLL_SD1_TX, val);
+		rtd129x_set_phase(host, PLL_SD1_TX, tx);
+		for (i = 0; i < SD_PHASES; i++) {
+			rtd129x_set_phase(host, PLL_SD1_RX, i);
+			if (!rtd129x_read_block0(host, buf))
+				rx_map |= BIT(i);
+		}
+	}
+	host->tuning = false;
+	rx = rtd129x_best_phase(rx_map);
+	rtd129x_set_phase(host, PLL_SD1_RX, rx < 0 ? 0 : rx);
+	kfree(buf);
+
+	dev_info(host->dev, "phases at %u MHz: tx %d, rx %d of %08x\n",
+		 host->mmc->ios.clock / 1000000, tx, rx, rx_map);
+
+	if (rx < 0) {
+		/*
+		 * Nothing could be read at any phase. Rather than let the core
+		 * fail the card, go back to the speed that needs no tuning.
+		 */
+		dev_warn(host->dev, "no working phase, staying at 25 MHz\n");
+		host->mmc->f_max = 25000000;
+		rtd129x_set_clock(host, 25000000);
+	}
+	host->tuned = true;
+}
+
+static void rtd129x_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+{
+	struct rtd129x_sdmmc *host = mmc_priv(mmc);
+	u8 cfg1;
+
+	rtd129x_power(host, ios->power_mode);
+
+	cfg1 = readb(host->sd + SD_CONFIGURE1) & ~SD_CFG1_BUS_WIDTH_MASK;
+	switch (ios->bus_width) {
+	case MMC_BUS_WIDTH_8:
+		cfg1 |= SD_CFG1_BUS_WIDTH_8;
+		break;
+	case MMC_BUS_WIDTH_4:
+		cfg1 |= SD_CFG1_BUS_WIDTH_4;
+		break;
+	default:
+		cfg1 |= SD_CFG1_BUS_WIDTH_1;
+		break;
+	}
+	writeb(cfg1, host->sd + SD_CONFIGURE1);
+	rtd129x_sync(host);
+
+	if (ios->clock <= 400000)
+		host->tuned = false;	/* powered off, or a card being identified */
+	if (ios->clock)
+		rtd129x_set_clock(host, ios->clock);
+	/*
+	 * On what the core asked for, not on the rate in effect: that still
+	 * holds the last card's when the clock is switched off, and tuning a
+	 * powered-down slot leaves the host stuck at 25 MHz for good.
+	 */
+	if (host->crt && !host->tuned && ios->clock > 25000000 &&
+	    ios->power_mode == MMC_POWER_ON && rtd129x_get_cd(mmc))
+		rtd129x_tune(host);
+}
+
+static const struct mmc_host_ops rtd129x_ops = {
+	.request	= rtd129x_request,
+	.set_ios	= rtd129x_set_ios,
+	.get_cd		= rtd129x_get_cd,
+};
+
+static irqreturn_t rtd129x_irq(int irq, void *dev_id)
+{
+	struct rtd129x_sdmmc *host = dev_id;
+	u32 isr;
+	u8 pend;
+
+	/*
+	 * Card insert/remove shares the line. It is disabled at init because
+	 * detection is polled, but if it ever latches, acknowledge it rather
+	 * than leave a level interrupt asserted.
+	 */
+	pend = readb(host->sd + CARD_INT_PEND) & CARD_INT_ALL;
+	if (pend)
+		writeb(pend, host->sd + CARD_INT_PEND);
+
+	isr = readl(host->sd + CR_SD_ISR) & ISR_ALL;
+	if (!isr)
+		return pend ? IRQ_HANDLED : IRQ_NONE;
+
+	/* Bit 0 clear: this clears the given bits, see ISR_WRITE_DATA. */
+	writel(isr, host->sd + CR_SD_ISR);
+
+	host->isr |= isr;
+	if (isr & (host->wait_for | ISR_CARD_ERR))
+		complete(&host->done);
+
+	return IRQ_HANDLED;
+}
+
 
 static int rtd129x_sdmmc_probe(struct platform_device *pdev)
 {

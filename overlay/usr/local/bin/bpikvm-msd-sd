@@ -1,0 +1,151 @@
+#!/bin/bash
+# Dedicate an SD card to kvmd's virtual media (the ISO store).
+#
+#   bpikvm-msd-sd [-y] [--force] [<device>]   set a card up and start using it
+#   bpikvm-msd-sd --undo                      go back to the eMMC's own store
+#   bpikvm-msd-sd --status                    where the store is now
+#
+# For a board whose system runs from the eMMC, where the store would otherwise
+# be a directory on the eMMC and share its 7.3 GiB with everything else. The
+# SD image needs none of this: it has a partition for the store already.
+#
+# The card is erased and becomes one ext4 partition labelled BPI-MSD, which
+# this mounts at /var/lib/kvmd/msd.data -- under the read-only bind mount
+# kvmd already has at /var/lib/kvmd/msd, so kvmd itself needs no change. The
+# fstab entry carries nofail, so the board still boots with no card in; the
+# store is then the empty directory on the eMMC.
+#
+# A card made this way is not bootable. With one in, the board boots from the
+# eMMC as before -- its u-boot tries the card first, finds nothing and falls
+# back. A card holding the SD *system* also carries a BPI-MSD partition (p3),
+# and this picks that up as the store, which is intended: the ISOs are on the
+# card either way.
+set -euo pipefail
+
+DEV_DEFAULT=/dev/mmcblk0
+LABEL=BPI-MSD
+DATA=/var/lib/kvmd/msd.data
+FSTAB=/etc/fstab
+LINE="LABEL=$LABEL  $DATA  ext4  nodev,nosuid,noexec,nofail  0 2"
+
+usage() { sed -n '2,25s/^# \{0,1\}//p' "$0"; }
+
+yes=0 force=0 mode=setup dev=
+for a in "$@"; do
+    case "$a" in
+        -y) yes=1 ;;
+        --force) force=1 ;;
+        --undo) mode=undo ;;
+        --status) mode=status ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "unknown option $a" >&2; usage >&2; exit 2 ;;
+        *) [ -z "$dev" ] || { echo "one device only" >&2; exit 2; }; dev="$a" ;;
+    esac
+done
+dev="${dev:-$DEV_DEFAULT}"
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+
+# Does the image mount a partition straight at the store (the SD image does)?
+own_partition() {
+    grep -qE "^LABEL=\S+[[:space:]]+/var/lib/kvmd/msd[[:space:]]" "$FSTAB"
+}
+
+store_now() {
+    local src
+    src="$(findmnt -n -o SOURCE "$DATA" 2>/dev/null || true)"
+    case "$src" in
+        /dev/*) echo "an SD card: $src ($(lsblk -dno SIZE "$src" | tr -d ' '))" ;;
+        *)      echo "the root filesystem's own directory $DATA" ;;
+    esac
+}
+
+if [ "$mode" = status ]; then
+    if own_partition; then
+        echo "kvmd's ISO store is this image's own partition:" \
+             "$(findmnt -n -o SOURCE,LABEL /var/lib/kvmd/msd 2>/dev/null || echo 'not mounted')"
+        echo "(nothing to set up: this is the SD image's layout)"
+    elif grep -q "^LABEL=$LABEL[[:space:]]" "$FSTAB"; then
+        echo "kvmd's ISO store is a dedicated SD card, when one labelled" \
+             "$LABEL is in: $(store_now)"
+    else
+        echo "kvmd's ISO store is $(store_now)"
+        echo "(\"bpikvm-msd-sd <device>\" dedicates an SD card to it)"
+    fi
+    df -h /var/lib/kvmd/msd | tail -1
+    exit 0
+fi
+
+# The SD image mounts a partition straight at the store; this would fight it
+if own_partition; then
+    echo "this system already keeps the ISO store on its own partition" >&2
+    echo "(see $FSTAB); nothing to do" >&2
+    exit 1
+fi
+
+if [ "$mode" = undo ]; then
+    if ! grep -q "^LABEL=$LABEL[[:space:]]" "$FSTAB"; then
+        echo "no SD entry in $FSTAB; the store is already $(store_now)"
+        exit 0
+    fi
+    systemctl stop kvmd kvmd-otg 2>/dev/null || true
+    umount /var/lib/kvmd/msd 2>/dev/null || true
+    umount "$DATA" 2>/dev/null || true
+    sed -i "\\#^LABEL=$LABEL[[:space:]]\\+$DATA#d" "$FSTAB"
+    systemctl daemon-reload
+    mount /var/lib/kvmd/msd
+    systemctl start kvmd kvmd-otg 2>/dev/null || true
+    echo "the ISO store is $(store_now)"
+    echo "(the card is untouched; its images are simply no longer used)"
+    exit 0
+fi
+
+# -- set a card up --------------------------------------------------------
+[ -b "$dev" ] || { echo "$dev: not a block device (is a card in?)" >&2; exit 1; }
+root="$(findmnt -n -o SOURCE / || true)"
+case "$root" in
+    "$dev"*) echo "$dev holds the running root filesystem" >&2; exit 1 ;;
+esac
+if findmnt -rn -o SOURCE | grep -q "^$dev"; then
+    echo "$dev has mounted partitions; unmount them first:" >&2
+    findmnt -rn -o SOURCE,TARGET | grep "^$dev" >&2
+    exit 1
+fi
+
+echo "card:  $dev, $(lsblk -dno SIZE "$dev" | tr -d ' ')"
+lsblk -no NAME,SIZE,FSTYPE,LABEL "$dev" | sed 's/^/  now: /'
+if [ "$force" != 1 ] && lsblk -no LABEL "$dev" | grep -qE '^(BPI|EMMC)-(BOOT|ROOT)$'; then
+    echo "this looks like a system card (it has a boot or root partition)." >&2
+    echo "Pass --force to erase it anyway." >&2
+    exit 1
+fi
+if [ "$yes" != 1 ]; then
+    read -r -p "Erase everything on $dev and use it for ISOs? [y/N] " ans
+    case "$ans" in y|Y|yes) ;; *) echo aborted; exit 1 ;; esac
+fi
+
+owner="$(id -u kvmd):$(id -g kvmd)"
+wipefs -aq "${dev}"* 2>/dev/null || true
+wipefs -aq "$dev"
+echo "label: dos" | sfdisk -q "$dev"
+echo ",,83" | sfdisk -q "$dev"
+blockdev --rereadpt "$dev"
+udevadm settle 2>/dev/null || true
+part="${dev}p1"
+[ -b "$part" ] || part="${dev}1"
+[ -b "$part" ] || { echo "cannot find the new partition on $dev" >&2; exit 1; }
+mkfs.ext4 -q -F -L "$LABEL" -E root_owner="$owner" "$part"
+
+systemctl stop kvmd kvmd-otg 2>/dev/null || true
+umount /var/lib/kvmd/msd 2>/dev/null || true
+grep -q "^LABEL=$LABEL[[:space:]]" "$FSTAB" || printf '%s\n' "$LINE" >> "$FSTAB"
+systemctl daemon-reload
+mkdir -p "$DATA"
+mount "$DATA"
+mount /var/lib/kvmd/msd
+systemctl start kvmd kvmd-otg 2>/dev/null || true
+
+echo
+echo "the ISO store is $(store_now)"
+df -h /var/lib/kvmd/msd | tail -1
+echo "upload images from the Web UI. To copy them in by hand:"
+echo "  mount -o remount,rw /var/lib/kvmd/msd   # kvmd does this itself"
