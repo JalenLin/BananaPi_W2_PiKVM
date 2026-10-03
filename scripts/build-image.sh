@@ -163,6 +163,52 @@ rm -rf "$BUILD/overlay" "$BUILD/overlay-bsp"
 cp -r "$PROJECT_ROOT/overlay" "$BUILD/overlay"
 cp -r "$PROJECT_ROOT/overlay-bsp" "$BUILD/overlay-bsp"
 
+# /etc/motd describes this image only: its kernel, rootfs, target and the
+# commit it was built from, not every combination the tree can build.
+GIT_BRANCH="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+GIT_REV="$(git -C "$PROJECT_ROOT" describe --always --dirty 2>/dev/null || echo unknown)"
+if [ "$FLAVOUR" = mainline ]; then
+    MOTD_KERNEL="Linux $(ls "$BUILD/modules-mainline/lib/modules" | head -1) (mainline LTS)"
+    MOTD_ROOTFS="Arch Linux ARM + PiKVM packages"
+    MOTD_VIDEO="MJPEG, H.264 (direct and WebRTC), HDMI audio; a terminal in the Web UI"
+else
+    MOTD_KERNEL="Linux 4.9.119 (Realtek BSP)"
+    MOTD_ROOTFS="Debian 13"
+    MOTD_VIDEO="MJPEG"
+fi
+case "$TARGET" in
+    sd)   MOTD_TARGET="SD card image (/boot is ${BOOT_LABEL}, / is ${ROOT_LABEL})" ;;
+    emmc) MOTD_TARGET="eMMC image (/boot is ${BOOT_LABEL}, / is ${ROOT_LABEL});
+          u-boot boots raw copies of /boot, kept in step by bpikvm-emmc-bootsync" ;;
+esac
+cat > "$BUILD/motd" <<MOTD
+
+  BPI-W2 PiKVM
+  ────────────────────────────────────────────────
+  kernel  ${MOTD_KERNEL}
+  rootfs  ${MOTD_ROOTFS}
+  image   ${MOTD_TARGET}
+  built   ${GIT_BRANCH} @ ${GIT_REV}, $(date -u +%Y-%m-%d)
+
+  Web UI    https://<this board's IP>/   admin / admin
+  Console   root / pikvm
+
+  ** Change both default passwords before real use **
+    kvmd-htpasswd set admin
+    passwd
+
+  Handy commands:
+    hdmirx-info                 detected input timings and V4L2 caps
+    hdmirx-capture 30 NV12      grab 30 frames to /tmp/hdmirx.raw
+    systemctl status kvmd kvmd-nginx
+
+  The board's Type-C port goes to the target machine: keyboard, mouse and
+  virtual media (MSD). ATX is not wired.
+  Video: ${MOTD_VIDEO}.
+
+MOTD
+echo ">>> motd:"; sed -n '4,7p' "$BUILD/motd"
+
 echo ">>> assembling the image (in a container, no loop device needed)"
 docker run --rm --entrypoint bash \
     -v "$BUILD:/b" -v "$BSP:/bsp:ro" debian:bookworm -euxc "
@@ -209,6 +255,7 @@ if [ $FLAVOUR = bsp ]; then
     # Files for the BSP kernel only (overlay-bsp/)
     cp -r /b/overlay-bsp/. /b/rootfs/
 fi
+install -m 644 /b/motd /b/rootfs/etc/motd
 # Units added to overlay/ after the rootfs was built (rootfs-arch.sh enables
 # the rest when it builds it)
 mkdir -p /b/rootfs/etc/systemd/system/multi-user.target.wants
