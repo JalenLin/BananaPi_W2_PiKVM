@@ -12,8 +12,16 @@ both, and the two are not merged.
 
 All of the following was verified on the board (BPI-W2, 2 GiB, Kodi on a
 Raspberry Pi 3 as the HDMI source, a PC on the Type-C port) on 2026-10-01;
-the eMMC rows, and capture and audio again on both boot paths (SD card
-system and eMMC system, both through the eMMC's u-boot), on 2026-10-03.
+the eMMC rows on 2026-10-02/03.
+
+**Release check, 2026-10-03** (`kernel-6.18` @ `3b99198`): both images
+rebuilt from the tree, checked for keys (none) and content, and booted from
+a fresh write -- the SD image `dd`'d on a PC, the eMMC image installed by
+the `bpikvm-install-emmc` that the SD image carries. On each of the three
+boot paths -- SD card through its own u-boot (SW4 = 1), SD card through the
+eMMC's u-boot (SW4 = 0), eMMC alone -- the first boot grew the root and
+made the host keys, no unit failed, and capture (1080p), the stream,
+HDMI audio (`arecord`) and keyboard/mouse (`configured`) all worked.
 
 | Feature | State | How it was verified | Where |
 |---|---|---|---|
@@ -39,10 +47,15 @@ system and eMMC system, both through the eMMC's u-boot), on 2026-10-03.
 
 Not done:
 
-- **The images, rebuilt and flashed from scratch.** The fixes of
-  2026-10-03 (capture and audio after the eMMC's u-boot) were verified on a
-  running board, pushed with `push-kernel-mainline.sh`; neither image has
-  since been rebuilt from the tree and booted from a fresh flash.
+- **The SD card while running from the eMMC.** Booted from the eMMC, the
+  kernel cannot use an SD card, inserted before or after power-on: the SD
+  driver relies on u-boot for the card's power and pads (`PFUNC_CR`
+  0x98012610, the pad at 0x98012618 that pulls the power switch, the drive
+  strength at 0x98012634/638) and they are only set when u-boot itself
+  reads the card. Writing those back was not enough (the SD core's
+  registers then read 0xde). There is no hot-plug either. With an SD card
+  in at power-on the board boots the SD card anyway, so this only matters
+  for writing an SD card from the eMMC system.
 - **An eMMC install without the serial port.** Each board needs the eMMC
   boot loader flashed (`romflash.py`) and its u-boot environment set
   (`uboot-env.txt` through `ubstop.py`) over the serial console once,
