@@ -4,7 +4,7 @@
 picked a version and wrote the milestones. **This document is the log of
 actually doing it**, on the `kernel-6.18` branch.
 
-Target: **Linux 6.18 LTS**, pinned at `v6.18.52`.
+Target: **Linux 6.18 LTS**, pinned at `v6.18.55` (brought up on `v6.18.52`; see §18 for the move).
 
 > **Status (2026-10-03):** every milestone below is done, and this line does
 > more than the BSP 4.9 one (H.264, WebRTC, HDMI audio, the eMMC). `main`
@@ -21,7 +21,7 @@ sit side by side and the build picks one.
 
 | Path | What it is |
 |------|------------|
-| `vendor/linux-mainline` | The upstream tree, shallow-cloned at `v6.18.52`. Never edited in place |
+| `vendor/linux-mainline` | The upstream tree, shallow-cloned at the pinned tag (`LINUX_REF` in `scripts/prepare-sources.sh`). Never edited in place |
 | `patches/linux-mainline/` | Changes to files that already exist upstream: the dts Makefile line, and the board compatible in the bindings |
 | `kernel/mainline/rtd1296-bananapi-w2.dts` | Our board DTS |
 | `kernel/mainline/bpiw2.config` | Kconfig fragment merged onto `arm64 defconfig` |
@@ -2136,11 +2136,51 @@ allocation (which the OOM killer then took, mid-allocation) and three
 streams started and stopped; none with the CPU stress test followed by a
 stream, the sequence that had logged it.
 
-## 18. Sources
+## 18. Upstream versions: 6.18.55, kvmd 4.219, ustreamer 6.67
+
+On 2026-10-04 the three pins in `scripts/prepare-sources.sh` moved:
+
+| | was | now |
+|---|---|---|
+| Linux stable | `v6.18.52` | `v6.18.55` |
+| kvmd | `v4.213` | `v4.219` |
+| ustreamer | `v6.66` | `v6.67` |
+
+Each patch series was first applied to the new tag in a scratch index
+(`git read-tree <tag>` into a temporary `GIT_INDEX_FILE`, then `git apply
+--cached` patch by patch), so nothing in `vendor/` moved until it was known
+to fit.
+
+- **Linux**: all 17 patches apply unchanged. Of the stable changes in what
+  our drivers use, the one worth reading was `regulator/core.c`, which now
+  narrows a regulator's constraints to its real voltages before applying
+  `apply_uV`; the G2227's CPU rail has a range, not a fixed voltage, so
+  `apply_uV` never runs for it.
+- **ustreamer**: both patches apply unchanged. New in 6.67:
+  `--cpu-scaling-governor-idle/-active`, which kvmd 4.219 requires
+  (`ustreamer>=6.67`).
+- **kvmd**: `0001` applies; `0002` did not. Upstream moved the write of
+  `lun.0/file` to after the other LUN attributes, and renamed `Image` to
+  `FileImage` in the MSD storage code (remote images, NBD); neither touches
+  what the patch changes, and a 3-way apply on `v4.219` was clean. Every
+  mountpoint check in the new MSD code still goes through `fs.py`, where
+  the patch's bind-mount detection lives. The PKGBUILD swapped
+  `python-yaml` for `python-ruamel-yaml`, which Arch has.
+
+kvmd 4.216 added `kvmd-pm.service`, which lets the `kvmd` group write the
+CPU governor, and PiKVM's configs gained
+`--cpu-scaling-governor-idle=schedutil` and `-active=performance`: full
+speed while someone watches. Both come with the platform packages, which
+this image does not use, so `main.yaml` and `rootfs-arch.sh` carry them.
+Measured with a viewer on a static screen, `performance` costs about 6 C
+(70 C against 64 C) for the same load; on a moving picture schedutil goes
+to the top anyway.
+
+## 19. Sources
 
 | Source | Used for |
 |--------|----------|
-| `vendor/linux-mainline` @ `v6.18.52` | `rtd129x.dtsi`, `rtd1296.dtsi`, `rtd1296-ds418.dts`, `arch/arm64/configs/defconfig` |
+| `vendor/linux-mainline` @ `v6.18.52`, later `v6.18.55` | `rtd129x.dtsi`, `rtd1296.dtsi`, `rtd1296-ds418.dts`, `arch/arm64/configs/defconfig` |
 | `vendor/bpi-w2-bsp/u-boot-rtk` | `boot_from_sd()`, the load addresses, the bootargs |
 | `vendor/bpi-w2-bsp/linux-rtk/include/soc/realtek/memory.h` | `ACPU_IDMEM_PHYS`/`_SIZE` |
 | `08-kernel-uplift.md` | The milestone definitions and the list of things to copy |

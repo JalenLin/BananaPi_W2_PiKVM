@@ -100,6 +100,11 @@ kvmd:
             - "--process-name-prefix={process_name_prefix}"
             - "--notify-parent"
             - "--no-log-colors"
+            # As PiKVM's own configs since kvmd 4.216: the CPUs at full speed
+            # while someone watches, schedutil otherwise. kvmd-pm.service
+            # lets the kvmd group write the governor.
+            - "--cpu-scaling-governor-idle=schedutil"
+            - "--cpu-scaling-governor-active=performance"
             # H.264 from VE1, the CODA980, through the mainline coda driver
             # (docs/09-mainline-bringup.md, section 11). Captured frames go to
             # it as DMA-BUFs. The BSP 4.9 kernel has no such device; its

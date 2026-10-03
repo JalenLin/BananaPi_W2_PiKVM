@@ -24,7 +24,7 @@ MSD on this board's mainline kernel:
   skipped remount_rw and uploads failed with EROFS.
 
 diff --git a/kvmd/apps/otg/__init__.py b/kvmd/apps/otg/__init__.py
-index f42e54e..746a4ac 100644
+index 2e0f885..185d454 100644
 --- a/kvmd/apps/otg/__init__.py
 +++ b/kvmd/apps/otg/__init__.py
 @@ -271,6 +271,31 @@ class _GadgetConfig:
@@ -59,7 +59,7 @@ index f42e54e..746a4ac 100644
      def __add_hid(self, desc: str, starter: list[str], start: bool, remote_wakeup: bool, hid: Hid) -> None:
          func = f"hid.usb{self.__hid_instance}"
          func_path = self.__create_function(func)
-@@ -308,7 +333,9 @@ class _GadgetConfig:
+@@ -306,7 +331,9 @@ class _GadgetConfig:
          _write(join(func_path, "lun.0/ro"), int(not rw))
          _write(join(func_path, "lun.0/removable"), int(removable))
          _write(join(func_path, "lun.0/nofua"), int(not fua))
@@ -68,8 +68,8 @@ index f42e54e..746a4ac 100644
 +        # only inquiry_string, and uses it for both modes.
 +        _write(join(func_path, "lun.0/inquiry_string_cdrom"), inquiry_string_cdrom, optional=True)
          _write(join(func_path, "lun.0/inquiry_string"), inquiry_string_flash)
-         if user != "root":
-             _chown(join(func_path, "lun.0/cdrom"), user)
+         if image_path:
+             _write(join(func_path, "lun.0/file"), image_path)
 @@ -416,7 +443,12 @@ def _cmd_start(config: Section) -> None:  # pylint: disable=too-many-statements,
      gc = _GadgetConfig(gadget_path, profile_path, config.otg.meta, config.otg.endpoints)
      cod = config.otg.devices
@@ -269,12 +269,12 @@ index 897c1e9..98a2dca 100644
  async def walk_storage(dir_path: str) -> AsyncGenerator[tuple[str, (list[str] | None)]]:
      tools.check_abs(dir_path)
 diff --git a/kvmd/plugins/msd/otg/storage.py b/kvmd/plugins/msd/otg/storage.py
-index 12ffba6..b8911b7 100644
+index 43dedc4..fbe0542 100644
 --- a/kvmd/plugins/msd/otg/storage.py
 +++ b/kvmd/plugins/msd/otg/storage.py
-@@ -258,7 +258,7 @@ class Storage:
+@@ -261,7 +261,7 @@ class Storage:
                  _check_image_name(name)
-                 images[name] = await _make_image(name, file_path, True, (mnt_path != root_path))
+                 images[name] = await _make_image(file_path, name, True, (mnt_path != root_path))
  
 -            if dir_path != root_path and os.path.ismount(dir_path):
 +            if dir_path != root_path and fs.is_mountpoint(dir_path):

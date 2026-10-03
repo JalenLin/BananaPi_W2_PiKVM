@@ -15,11 +15,11 @@ BSP_REF="master"
 # The mainline/LTS kernel line. The BSP is still needed alongside it -- u-boot,
 # the audio firmware blob and the vendor initramfs all come from there.
 LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
-LINUX_REF="v6.18.52"
+LINUX_REF="v6.18.55"
 KVMD_URL="https://github.com/pikvm/kvmd.git"
-KVMD_REF="v4.213"
+KVMD_REF="v4.219"
 USTREAMER_URL="https://github.com/pikvm/ustreamer.git"
-USTREAMER_REF="v6.66"
+USTREAMER_REF="v6.67"
 # The WebRTC gateway kvmd-janus runs; Debian 13 does not package it. PiKVM
 # builds a later commit; v1.4.2 already has its pkg-config file, which leaves
 # PiKVM's janus.js patch (patches/janus).

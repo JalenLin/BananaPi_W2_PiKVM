@@ -241,7 +241,7 @@ done
 done
 
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd sshd \
-    kvmd kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot \
+    kvmd kvmd-pm kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot \
     bpikvm-emmc-bootsync.path
 
 # -- what must not be in an image -------------------------------------
