@@ -1,0 +1,38 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] clk: add the Realtek RTD129x CPU clock
+
+PLL_SCPU and its output divider, so that cpufreq-dt can scale the CPUs.
+The driver, clk-rtd129x-scpu.c, is kept outside the kernel tree in
+kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+lines hook it in.
+
+diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -414,6 +414,15 @@
+ 	  Without them the USB controllers stay gated unless the bootloader
+ 	  happened to open them.
+ 
++config COMMON_CLK_RTD129X_SCPU
++	bool "Realtek RTD129x CPU clock"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on OF
++	select MFD_SYSCON
++	help
++	  PLL_SCPU and its divider on the Realtek RTD1295/RTD1296, the clock
++	  of the CPUs, for CPU frequency scaling.
++
+ config COMMON_CLK_RS9_PCIE
+ 	tristate "Clock driver for Renesas 9-series PCIe clock generators"
+ 	depends on I2C
+diff --git a/drivers/clk/Makefile b/drivers/clk/Makefile
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -105,6 +105,7 @@
+ obj-$(CONFIG_ARCH_VT8500)		+= clk-vt8500.o
+ obj-$(CONFIG_COMMON_CLK_RS9_PCIE)	+= clk-renesas-pcie.o
+ obj-$(CONFIG_COMMON_CLK_RTD129X_CRT)	+= clk-rtd129x-crt.o
++obj-$(CONFIG_COMMON_CLK_RTD129X_SCPU)	+= clk-rtd129x-scpu.o
+ obj-$(CONFIG_COMMON_CLK_SI521XX)	+= clk-si521xx.o
+ obj-$(CONFIG_COMMON_CLK_VC3)		+= clk-versaclock3.o
+ obj-$(CONFIG_COMMON_CLK_VC5)		+= clk-versaclock5.o

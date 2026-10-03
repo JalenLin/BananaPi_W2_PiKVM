@@ -16,6 +16,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/thermal/thermal.h>
 #include "rtd1296.dtsi"
 
 / {
@@ -134,20 +135,91 @@
 	};
 
 	/*
-	 * Only a critical trip: there is no cpufreq driver yet, so nothing to
-	 * throttle. 130 C is the BSP's cpu-crit.
+	 * The BSP's table (rtd-129x-cpu-dvfs.dtsi), as far as the CPU rail's
+	 * boot voltage reaches. The G2227's DCDC2 comes up at 1.0 V and
+	 * nothing here changes it yet, so every OPP runs at 1.0 V; the BSP
+	 * asks for at most 962.5 mV up to 1.1 GHz, and 1.2-1.4 GHz need more
+	 * than 1.0 V. The voltages are kept for when the PMIC has a driver.
 	 */
+	cpu_opp: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-300000000 {
+			opp-hz = /bits/ 64 <300000000>;
+			opp-microvolt = <800000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <800000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <800000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <825000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <850000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <875000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <900000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <925000>;
+			clock-latency-ns = <150000>;
+		};
+		opp-1100000000 {
+			opp-hz = /bits/ 64 <1100000000>;
+			opp-microvolt = <962500>;
+			clock-latency-ns = <150000>;
+		};
+	};
+
+	/* The BSP's cpu-alert0 throttles the CPUs; 130 C is its cpu-crit. */
 	thermal-zones {
 		cpu-thermal {
-			polling-delay-passive = <0>;
+			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 			thermal-sensors = <&cpu_tm>;
 
 			trips {
+				cpu_alert: cpu-alert {
+					temperature = <105000>;
+					hysteresis = <3000>;
+					type = "passive";
+				};
 				cpu-crit {
 					temperature = <130000>;
 					hysteresis = <2000>;
 					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_alert>;
+					cooling-device =
+						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						<&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -190,6 +262,40 @@
 		reg = <0xc 0x8>;
 		#clock-cells = <1>;
 	};
+
+	/*
+	 * The CPU clock, PLL_SCPU (0x500) and its divider (0x30);
+	 * kernel/mainline/clk-rtd129x-scpu.c, through this syscon's regmap.
+	 */
+	scpu_clk: clock-controller@500 {
+		compatible = "realtek,rtd1295-scpu-clk";
+		reg = <0x500 0x20>;
+		#clock-cells = <0>;
+	};
+};
+
+&cpu0 {
+	clocks = <&scpu_clk>;
+	operating-points-v2 = <&cpu_opp>;
+	#cooling-cells = <2>;
+};
+
+&cpu1 {
+	clocks = <&scpu_clk>;
+	operating-points-v2 = <&cpu_opp>;
+	#cooling-cells = <2>;
+};
+
+&cpu2 {
+	clocks = <&scpu_clk>;
+	operating-points-v2 = <&cpu_opp>;
+	#cooling-cells = <2>;
+};
+
+&cpu3 {
+	clocks = <&scpu_clk>;
+	operating-points-v2 = <&cpu_opp>;
+	#cooling-cells = <2>;
 };
 
 &iso {
@@ -198,6 +304,44 @@
 		compatible = "realtek,rtd1295-iso-clk";
 		reg = <0x8c 0x4>;
 		#clock-cells = <1>;
+	};
+
+	/*
+	 * ISO_MUXPAD0/1: two bits per pin, 0 = GPIO. Mainline has no RTD1295
+	 * pinctrl driver; pinctrl-single covers the few pins needed here.
+	 */
+	iso_pinmux: pinmux@310 {
+		compatible = "pinctrl-single";
+		reg = <0x310 0x8>;
+		#pinctrl-cells = <2>;
+		pinctrl-single,bit-per-mux;
+		pinctrl-single,register-width = <32>;
+		pinctrl-single,function-mask = <0x3>;
+
+		/* i2c_scl_0 bits 23:22, i2c_sda_0 bits 25:24, function 1 */
+		i2c0_pins: i2c0-pins {
+			pinctrl-single,bits = <0x0 0x01400000 0x03c00000>;
+		};
+	};
+
+	/*
+	 * The bus to the G2227 PMIC (schematic page 7). A DesignWare I2C
+	 * (IC_COMP_TYPE 0x44570140, v1.14a) clocked from the 27 MHz crystal.
+	 * The boot loader leaves its pins as GPIOs.
+	 */
+	i2c0: i2c@d00 {
+		compatible = "snps,designware-i2c";
+		reg = <0xd00 0x100>;
+		interrupt-parent = <&iso_irq_mux>;
+		interrupts = <8>;
+		clocks = <&osc27M>, <&iso_clk 9>;
+		clock-names = "ref", "pclk";
+		resets = <&iso_reset RTD1295_ISO_RSTN_I2C_0>;
+		clock-frequency = <100000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c0_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 	};
 };
 

@@ -178,6 +178,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
 | **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14 |
 | **Thermal** | the CPU temperature sensor | **done** 2026-10-03: `thermal_zone0`, shown by kvmd -- see §15 |
+| **cpufreq** | the CPU clock, OPPs, cooling | **done** 2026-10-03, up to 1.1 GHz at the boot voltage; above that needs the PMIC -- see §16 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -1981,7 +1982,87 @@ trips and no cooling map: without cpufreq there is nothing to throttle.
 Verified: `thermal_zone0` (`cpu-thermal`) reads 67-72 C with the capture
 running, kvmd's `/api/info` reports `temp.cpu`, and its log is quiet.
 
-## 16. Sources
+## 16. CPU frequency
+
+### Where the CPUs were
+
+The CPU clock is PLL_SCPU, an N/F PLL off the 27 MHz crystal, through a
+divider of 1, 2 or 4 (BSP: `drivers/clk/realtek/cc-rtd129x.c`,
+`clk-pll.[ch]`). Read on a running board:
+
+```
+0x98000030 = 0x00000100   divider field (bits 8:7) = 2 -> /2
+0x98000504 = 0x0001c213   N = 56, F = 531 -> 27 * (56 + 3 + 531/2048) = 1600 MHz
+```
+
+So the boot loader leaves the CPUs at **800 MHz**. The BSP's OPP table
+(`rtd-129x-cpu-dvfs.dtsi`) goes from 300 MHz to 1.4 GHz, with a voltage
+for each step on the G2227 PMIC's DCDC2.
+
+### The PMIC, and a trap
+
+The G2227 is on I2C0 (schematic page 7, U12; pins `I2C0_SCL/SDA`, ISO
+GPIO 16/17), a DesignWare I2C (`IC_COMP_TYPE` 0x44570140, v1.14a). The boot
+loader leaves those two pins as GPIOs (`ISO_MUXPAD0` 0x98007310, bits
+25:22 = 0), so the bus does not reach the PMIC and nothing before Linux
+ever touched it.
+
+**Do not talk to the PMIC through `/dev/mem`.** A hand-driven read over
+the bare controller (pins switched to I2C, then register-address writes and
+read commands into `IC_DATA_CMD`) cut the board's power on the spot: the
+board went dark and needed its power plug pulled. Most likely one of those
+"reads" reached the PMIC as a write of 0 to register 0x05, which switches
+every rail off. With the kernel's `i2c-designware` driver (the board DTS's
+`i2c0` node, the pins switched by `pinctrl-single`) `i2cget` reads it
+cleanly:
+
+```
+0x20 = 0xdb   chip id 27 (G2227), version 3
+0x05 = 0xff   every rail on
+0x10 = 0x10   DCDC2 (CPU)  0.8 V + 16 * 12.5 mV = 1.000 V
+0x11 = 0x10   DCDC3 (GPU)  1.000 V
+0x12 = 0x10   DCDC5 (ISO)  1.000 V
+0x13 = 0xd0   DCDC1 3.3 V, DCDC6 (TOP) 1.000 V
+```
+
+The BSP asks for at most 962.5 mV up to 1.1 GHz and 1.0125 V from 1.2 GHz.
+So at the rail's own 1.0 V everything up to 1.1 GHz is within the BSP's
+table, and nothing needs writing to the PMIC.
+
+### The clock driver
+
+`kernel/mainline/clk-rtd129x-scpu.c` is one clock, `scpu`, under the
+`crt` syscon. It takes the BSP's N/F values for 1.0-1.8 GHz and its divider
+choice (/1 from 1 GHz, /2 from 500 MHz, /4 below), and changes rate the way
+the BSP does:
+
+- PLL: `oc_en` (0x500 bits 2:0) to 4, the new N/F into 0x504, `oc_en` to
+  5, then wait for `oc_done` (0x51c bit 20).
+- Divider: changes to or from /1 are made with the PLL parked at 1 GHz
+  (the BSP's glitch workaround). Otherwise divide more before raising the
+  PLL, less after, so the output never overshoots.
+
+The board DTS gives each CPU that clock, the BSP's OPPs from 300 MHz to
+1.1 GHz, and `#cooling-cells`; `cpufreq-dt` (in defconfig) does the rest,
+with schedutil. The thermal zone gained the BSP's 105 C passive trip, which
+throttles the CPUs.
+
+### Verified
+
+- Every OPP set through the `userspace` governor, the registers read back
+  (PLL and divider as intended), and a fixed busy loop timed on an
+  otherwise idle CPU: frequency x time is constant to within 0.5 % across
+  all nine steps (two interleaved rounds). The PMU cycle counter reads 0 on
+  this SoC, so the loop is the measurement.
+- All four cores at 1.1 GHz for 5 minutes, each hashing the same 8 MiB
+  over and over and comparing: about 32,000 rounds, no mismatch, nothing in
+  the kernel log. The sensor went from 72 C to 94 C and was still rising
+  slowly -- under the 105 C trip.
+- Idle under schedutil the CPUs sit mostly at 300 MHz.
+- With the new clock in place: 1080p60 capture (ustreamer reports 60 fps
+  captured), a kvmd snapshot, HID online, HDMI audio through `arecord`.
+
+## 17. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -1994,6 +2075,11 @@ running, kvmd's `/api/info` reports `temp.cpu`, and its log is quiet.
 | `Fireblossom/wd-mch-kernel` @ `947374d` (`linux-6.18.40/drivers/net/ethernet/realtek/r8169soc.c`) | The 6.18 port of Realtek's `r8169soc.c` that M2 starts from |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_chip.c` | Where the chip revision lives |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/thermal/realtek/sensor-rtd129x.c` | The thermal sensor's registers, reset pulse and scaling |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/clk/realtek/cc-rtd129x.c`, `clk-pll.[ch]` | PLL_SCPU: registers, N/F table, divider and the order of a rate change |
+| `vendor/bpi-w2-bsp/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-129x-cpu-dvfs.dtsi`, `rtd-1296.dtsi` | The OPP table, the trips |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/regulator/g2227-regulator.c` | The G2227's registers and voltage steps |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/pinctrl/realtek/pinctrl-rtd129x.h` | The I2C0 pin mux bits |
+| `docs/refs/bpi-w2-v1_1-pub.pdf` page 7 | The G2227 on I2C0, and which rail is which |
 | `vendor/bpi-w2-bsp/u-boot-rtk/include/configs/rtd1295_common.h` | `CONFIG_ETHADDR`, the MAC every board shares |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_ve/ve1/ve1.c` | VE1 power-on and the wrapper setup |
 | `BPI-SINOVOIP/BPI-1296-Android7` @ `d377aa6` | `ve1.bin`; `libvpu.so` and the `vpuapi` headers (CODA980 register use) |

@@ -52,6 +52,7 @@ cp /work/kernel/mainline/sdmmc-rtd129x.c drivers/mmc/host/sdmmc-rtd129x.c
 cp /work/kernel/mainline/emmc-rtd129x.c drivers/mmc/host/emmc-rtd129x.c
 cp /work/kernel/mainline/r8169soc.c drivers/net/ethernet/realtek/r8169soc.c
 cp /work/kernel/mainline/clk-rtd129x-crt.c drivers/clk/clk-rtd129x-crt.c
+cp /work/kernel/mainline/clk-rtd129x-scpu.c drivers/clk/clk-rtd129x-scpu.c
 cp /work/kernel/mainline/rtd129x-thermal.c drivers/thermal/rtd129x-thermal.c
 rm -rf drivers/media/platform/realtek-rtd129x-hdmirx
 cp -r /work/kernel/mainline/hdmirx drivers/media/platform/realtek-rtd129x-hdmirx
