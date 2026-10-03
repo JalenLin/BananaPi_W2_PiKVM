@@ -135,11 +135,9 @@
 	};
 
 	/*
-	 * The BSP's table (rtd-129x-cpu-dvfs.dtsi), as far as the CPU rail's
-	 * boot voltage reaches. The G2227's DCDC2 comes up at 1.0 V and
-	 * nothing here changes it yet, so every OPP runs at 1.0 V; the BSP
-	 * asks for at most 962.5 mV up to 1.1 GHz, and 1.2-1.4 GHz need more
-	 * than 1.0 V. The voltages are kept for when the PMIC has a driver.
+	 * The BSP's table (rtd-129x-cpu-dvfs.dtsi): the CPU rail is the
+	 * G2227's DCDC2 (cpu-supply), and g2227-regulator.c moves the L2 rail
+	 * with it.
 	 */
 	cpu_opp: opp-table-cpu {
 		compatible = "operating-points-v2";
@@ -188,6 +186,21 @@
 		opp-1100000000 {
 			opp-hz = /bits/ 64 <1100000000>;
 			opp-microvolt = <962500>;
+			clock-latency-ns = <150000>;
+		};
+		opp-1200000000 {
+			opp-hz = /bits/ 64 <1200000000>;
+			opp-microvolt = <1012500>;
+			clock-latency-ns = <150000>;
+		};
+		opp-1300000000 {
+			opp-hz = /bits/ 64 <1300000000>;
+			opp-microvolt = <1062500>;
+			clock-latency-ns = <150000>;
+		};
+		opp-1400000000 {
+			opp-hz = /bits/ 64 <1400000000>;
+			opp-microvolt = <1100000>;
 			clock-latency-ns = <150000>;
 		};
 	};
@@ -276,24 +289,28 @@
 
 &cpu0 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supply>;
 	operating-points-v2 = <&cpu_opp>;
 	#cooling-cells = <2>;
 };
 
 &cpu1 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supply>;
 	operating-points-v2 = <&cpu_opp>;
 	#cooling-cells = <2>;
 };
 
 &cpu2 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supply>;
 	operating-points-v2 = <&cpu_opp>;
 	#cooling-cells = <2>;
 };
 
 &cpu3 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supply>;
 	operating-points-v2 = <&cpu_opp>;
 	#cooling-cells = <2>;
 };
@@ -342,6 +359,44 @@
 		pinctrl-0 = <&i2c0_pins>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		/*
+		 * kernel/mainline/g2227-regulator.c. Only DCDC2 can be set;
+		 * the rest are listed for their names and read back as they
+		 * are. The limits are the BSP's OPP table's, not the chip's.
+		 */
+		pmic@12 {
+			compatible = "gmt,g2227";
+			reg = <0x12>;
+
+			regulators {
+				dcdc1 {
+					regulator-name = "vd33";
+				};
+				cpu_supply: dcdc2 {
+					regulator-name = "vdd-cpu";
+					regulator-min-microvolt = <800000>;
+					regulator-max-microvolt = <1100000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+				dcdc3 {
+					regulator-name = "vdd-gpu";
+				};
+				dcdc5 {
+					regulator-name = "vdd-iso";
+				};
+				dcdc6 {
+					regulator-name = "vdd-top";
+				};
+				ldo2 {
+					regulator-name = "vd18";
+				};
+				ldo3 {
+					regulator-name = "vdd-l2";
+				};
+			};
+		};
 	};
 };
 

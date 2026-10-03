@@ -1,0 +1,37 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] regulator: add the GMT G2227 PMIC
+
+The PMIC of the Realtek RTD129x boards, here for the CPU rail. The
+driver, g2227-regulator.c, is kept outside the kernel tree in
+kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+lines hook it in.
+
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -419,6 +419,15 @@
+ 	  This driver supports the voltage domain regulators controlled by the
+ 	  DB8500 PRCMU
+ 
++config REGULATOR_G2227
++	tristate "GMT G2227 PMIC"
++	depends on I2C && OF
++	select REGMAP_I2C
++	help
++	  The G2227 PMIC of Realtek RTD129x boards. Only the CPU rail can be
++	  changed, with the L2 rail following it; the other outputs are
++	  read-only, and no output can be switched on or off.
++
+ config REGULATOR_FAN53555
+ 	tristate "Fairchild FAN53555 Regulator"
+ 	depends on I2C
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -52,4 +52,5 @@
+ obj-$(CONFIG_REGULATOR_DB8500_PRCMU) += db8500-prcmu.o
+ obj-$(CONFIG_REGULATOR_FAN53555) += fan53555.o
+ obj-$(CONFIG_REGULATOR_FAN53880) += fan53880.o
++obj-$(CONFIG_REGULATOR_G2227) += g2227-regulator.o
+ obj-$(CONFIG_REGULATOR_GPIO) += gpio-regulator.o
+ obj-$(CONFIG_REGULATOR_HI6421) += hi6421-regulator.o

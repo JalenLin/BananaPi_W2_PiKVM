@@ -178,7 +178,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
 | **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14 |
 | **Thermal** | the CPU temperature sensor | **done** 2026-10-03: `thermal_zone0`, shown by kvmd -- see §15 |
-| **cpufreq** | the CPU clock, OPPs, cooling | **done** 2026-10-03, up to 1.1 GHz at the boot voltage; above that needs the PMIC -- see §16 |
+| **cpufreq** | the CPU clock, the PMIC, OPPs, cooling | **done** 2026-10-03: 300 MHz - 1.4 GHz with the BSP's voltages, the L2 rail following -- see §16 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -2061,6 +2061,47 @@ throttles the CPUs.
 - Idle under schedutil the CPUs sit mostly at 300 MHz.
 - With the new clock in place: 1080p60 capture (ustreamer reports 60 fps
   captured), a kvmd snapshot, HID online, HDMI audio through `arecord`.
+
+### The PMIC driver, and 1.2-1.4 GHz
+
+Above 1.1 GHz the BSP raises the CPU rail, and with it two more things
+(`drivers/cpufreq/rtk-cpufreq.c`):
+
+- **The L2 rail.** `l2-supply` is the G2227's LDO3, set before every CPU
+  voltage change: 0.9 V for a CPU rail up to 1.0 V, 0.95 V up to 1.05 V,
+  1.0 V above. On the BPI-W2 LDO3 (`MEM_LDO`) feeds `MEM_DVS` through
+  RP6 (0R); the alternative feed from 1.0V_TOP, RP7, is not fitted
+  (schematic page 7). So the rail is there and must follow.
+- **The CPU rail's mode.** DCDC2 runs in forced PWM from 1 GHz (925 mV),
+  in automatic mode below. Mode field `0x07` bits 3:2, 2 = PWM.
+
+`kernel/mainline/g2227-regulator.c` is a regulator driver that can do only
+that. DCDC2 is the one regulator with a `set_voltage_sel`, which moves
+LDO3 and the mode first and the CPU rail last; the other outputs are
+registered read-only, for the summary. It has no enable or disable ops,
+and its regmap allows writes to `0x07`, `0x10` and `0x14` only -- so no
+path in it reaches `0x05`, where every output's on bit is. The DT limits
+DCDC2 to the OPP table's 0.8-1.1 V, not the chip's 1.1875 V.
+
+It went on in two boots. First the driver alone, no consumer: it read
+every output back as before (3.3, 1.0, 1.0, 1.0, 1.0, 1.8, 0.9 V) and
+wrote nothing. Then, by hand with `i2cset -f`, DCDC2 written its own value,
+read back; 0.9875 V, read back (sysfs agreed), checked hashing; 1.0 V
+again. Only then `cpu-supply` and the BSP's 1.2/1.3/1.4 GHz steps.
+
+Verified:
+
+- Every one of the twelve OPPs through the `userspace` governor, with the
+  PLL, divider, DCDC2, LDO3 and mode read back -- each as the table says,
+  e.g. 1.4 GHz: 1.1 V, L2 1.0 V, PWM; 1.2 GHz: 1.0125 V, L2 0.95 V, PWM;
+  900 MHz: 0.9 V, L2 0.9 V, auto -- and the busy loop timed at each.
+- All four cores at 1.4 GHz for 5 minutes with the hashing check: about
+  35,700 rounds, no mismatch. The sensor reached 105 C after two minutes;
+  the passive trip then held the CPUs at 1.2-1.3 GHz, voltage following,
+  between 101 and 105 C, and they went back to 1.4 GHz when the load
+  stopped. On this board, with no heatsink of its own, a sustained
+  all-core load runs at about 1.25 GHz; bursts at 1.4 GHz.
+- Capture, the kvmd snapshot, HID, HDMI audio and every unit as before.
 
 ## 17. Sources
 

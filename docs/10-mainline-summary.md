@@ -62,7 +62,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Virtual media (MSD) | done | image upload and connect through kvmd | §10 |
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
-| CPU frequency | done | own driver for the CPU PLL and divider, `cpufreq-dt` with schedutil, 300 MHz - 1.1 GHz (the boot loader leaves 800 MHz). Every step measured against the clock, 4 cores at 1.1 GHz for 5 min with checked results | `docs/09` §16 |
+| CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz at the BSP's voltages, the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
 
 Not done:
@@ -73,10 +73,6 @@ Not done:
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
 - **The board's own HDMI output**: no driver; the console is the serial port
   and the network. PiKVM itself does not need it.
-- **CPU voltage, and 1.2-1.4 GHz**: the CPU rail stays at the 1.0 V the
-  G2227 PMIC comes up with, which the BSP's table allows up to 1.1 GHz.
-  Its 1.2-1.4 GHz steps need more, so a regulator driver for the PMIC
-  (`docs/09` §16). The I2C bus to it already works.
 - **eMMC HS200**: the eMMC runs at High Speed (52 MHz, 38 MB/s read); HS200
   would need the BSP's phase tuning (§5 of this file).
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
@@ -173,6 +169,7 @@ cannot be unloaded.
 | 0014 | The eMMC host |
 | 0015 | The thermal sensor |
 | 0016 | The CPU clock |
+| 0017 | The G2227 PMIC (CPU and L2 rails) |
 
 ### Out-of-tree files (`kernel/mainline`), copied in at build time
 
@@ -180,7 +177,7 @@ cannot be unloaded.
 |---|---|
 | `rtd1296-bananapi-w2.dts` | The board: reserved memory for the Realtek firmware, every device |
 | `bpiw2.config` | The config fragment on top of arm64 defconfig |
-| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c`, `rtd129x-thermal.c`, `clk-rtd129x-scpu.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014, 0015, 0016 |
+| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c`, `rtd129x-thermal.c`, `clk-rtd129x-scpu.c`, `g2227-regulator.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014, 0015, 0016, 0017 |
 | `hdmirx/` | The HDMI receiver: Realtek's BSP driver with a new V4L2 side |
 | `acpu/` | `rtd129x-acpu` (RPC to the audio CPU firmware) and `snd-rtd129x-hdmirx` (ALSA capture) |
 | `diag/` | A diagnostic initramfs used during bring-up |
