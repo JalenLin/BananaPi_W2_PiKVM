@@ -6,9 +6,10 @@ actually doing it**, on the `kernel-6.18` branch.
 
 Target: **Linux 6.18 LTS**, pinned at `v6.18.52`.
 
-> **This branch does not produce a working PiKVM.** `main` remains the
-> deliverable. Until M5 (HDMI capture) lands here, this line has less
-> function than the BSP 4.9 one, by design -- see §7 of `08-kernel-uplift.md`.
+> **Status (2026-10-03):** every milestone below is done, and this line does
+> more than the BSP 4.9 one (H.264, WebRTC, HDMI audio, the eMMC). `main`
+> still carries the BSP line; the two are not merged. A one-page summary is
+> `10-mainline-summary.md`.
 
 ---
 
@@ -25,6 +26,8 @@ sit side by side and the build picks one.
 | `kernel/mainline/rtd1296-bananapi-w2.dts` | Our board DTS |
 | `kernel/mainline/bpiw2.config` | Kconfig fragment merged onto `arm64 defconfig` |
 | `kernel/mainline/r8169soc.c` | The gigabit MAC driver (M2), copied in at build time |
+| `kernel/mainline/emmc-rtd129x.c` | The eMMC host driver (§14), copied in at build time; the other drivers are listed in `10-mainline-summary.md` §3 |
+| `tools/emmc/` | Flashing the eMMC boot loader and driving its u-boot (§14) |
 | `scripts/push-kernel-mainline.sh` | Installs a new kernel on a running board over ssh |
 | `docker/builder-mainline.Dockerfile` | Trixie + `gcc-aarch64-linux-gnu` 14.2 |
 | `scripts/build-kernel-mainline.sh` | Copies the DTS in, configures, builds |
@@ -35,6 +38,7 @@ make builder-mainline     # trixie compile container
 make sources-mainline     # fetch the kernel (~2 GB) and apply patches/linux-mainline
 make kernel-mainline      # Image + dtbs + modules
 make image-mainline       # SD image with that kernel instead of the BSP one
+make image-emmc           # the same system as an eMMC image (§14)
 
 # narrower runs, useful while iterating on the DTS
 CHECK_DTBS=1 TARGETS='realtek/rtd1296-bananapi-w2.dtb' scripts/build-kernel-mainline.sh
@@ -117,8 +121,20 @@ Two consequences:
    ```
 
 All four files must be present or `boot_from_sd()` bails out, so the mainline
-image still ships the vendor `bluecore.audio` and initramfs even though
-nothing on this kernel line uses them.
+image still ships the vendor `bluecore.audio` and initramfs. The audio
+firmware turned out to be needed anyway: it is what HDMI audio runs on (§13).
+
+Two things changed later:
+
+- **A second boot path, BPI's eMMC u-boot (SW4 = 0), since 2026-10-02.** Its
+  environment is ours (`tools/emmc/uboot-env.txt`): it boots the SD card's
+  files when there is a card, the eMMC's otherwise. It differs from the SD
+  card's u-boot in ways that mattered -- it cannot read files from its eMMC,
+  it starts the audio CPU by itself, and it leaves the display side off.
+  See §14.
+- **The command line comes from the boot loader** since the eMMC work (it
+  was compiled in and forced through M0-M6, because LK passed an empty
+  one). Both u-boots pass a full one; the root differs between them.
 
 ---
 
@@ -160,6 +176,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
 | **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11 |
 | **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
+| **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -713,7 +730,9 @@ Consequences:
   this kernel.
 - **Installing to eMMC later** would hit the same problem if the eMMC keeps
   that Android boot chain; replacing it with the BSP u-boot is the thing to
-  verify first when that work starts.
+  verify first when that work starts. *(Done, §14: the eMMC now carries
+  BPI's u-boot instead of LK, and the kernel ran a 7-minute memory stress
+  test under it without a fault.)*
 - `slub_debug` is gone from the command line. It never fixed anything: it
   moved the slab layout so the damage landed somewhere less fatal, and
   reported nothing.
@@ -1427,6 +1446,14 @@ come up the first time too, because `firstboot-done` was already there on
 the second boot. The silence was on the console path, not a hang, and is
 put down to the card slot and serial capture rather than the image.
 
+### After the eMMC's u-boot (2026-10-03)
+
+Everything above was found under the SD card's u-boot. Under BPI's eMMC
+u-boot capture failed, with the same kernel and the same source. The
+receiver depends on display-side state that no driver on this kernel owns
+and that the SD card's u-boot happens to leave on; the receiver driver now
+turns it on. The full account is in §14.
+
 ## 11. H.264: VE1, the CODA980
 
 PiKVM sends audio only over WebRTC, and its WebRTC video is H.264, so H.264
@@ -1720,7 +1747,134 @@ boot, and WebRTC audio as before. The first version compared the string
 without its trailing newline, did not recognise the build, and said so
 (`unknown firmware build, debug output left on`).
 
-## 14. Sources
+### Under the eMMC's u-boot (2026-10-03)
+
+The start-up above assumes the SD card's u-boot, which starts the firmware
+with `go a` right before `booti`. BPI's eMMC u-boot starts it by itself,
+earlier, from its vendor firmware table, and every RPC timed out until that
+table pointed at our firmware and nothing loaded it a second time. See §14.
+
+## 14. eMMC
+
+The eMMC used to carry BPI's Android: LK, under which this kernel corrupted
+memory (§5). Making it the system disk took three parts -- a boot loader,
+a host driver, an image -- and then two fixes outside the eMMC, for capture
+and audio, which that boot loader broke. The summary, with the commands,
+is `10-mainline-summary.md` §5; this is how it was found.
+
+### A boot loader on the eMMC (2026-10-01)
+
+The BSP cannot build the eMMC bootcode: its flash writer needs Realtek
+blobs that are not in the tree (`bootmon-new.bin`, an FSBL loader). BPI's
+release has one ready, `dvrboot.exe.bin` and its hwsetting, in the "Hardware
+files" zip on the wiki. It goes on through the SoC ROM's serial download
+mode, which `tools/emmc/romflash.py` drives: ctrl+q while the board
+resets, then at the ROM's `d/g/r` prompt the hwsetting (`h` + Y-modem), a
+register write (`s` 98007058 01500000), dvrboot (`d` + Y-modem) and `g`.
+Two Y-modem traps: the ROM sends `C` without pause, and the text before
+the transfer (`download to 0x80006C30`) contains one.
+
+The result, on the eMMC's user area: hwsetting at block 0x100, u-boot
+2015.07 at 0x107, FSBL, OP-TEE and BL31 behind it, the environment from
+0x1100. FSBL, OP-TEE 2.1, BL31, then u-boot -- and this kernel ran 7 minutes
+of memory stress under it without a fault, where under LK it died every
+time. So the corruption of §5 belonged to LK.
+
+This u-boot has `bootdelay` 0 (`tools/emmc/ubstop.py` sends Esc until its
+prompt), no `printenv`, no `boot`, and its hush expands `${...}` inside
+double quotes at `setenv` time. The environment is
+`tools/emmc/uboot-env.txt`.
+
+### The host driver (2026-10-01 to 10-02)
+
+The controller is a Synopsys DesignWare MSHC with a Realtek wrapper.
+Mainline's `dw_mmc` with a glue found the card, then every transfer hung
+with its descriptor "still owned by IDMAC", and the debugging tests
+corrupted memory and reset the SoC outright. The glue was dropped for a
+driver of its own (`emmc-rtd129x.c`) that follows the BSP's `rtkemmc.c`
+and u-boot's eMMC code. The causes, each found by tracing the DMAC's
+registers (`DSCADDR`, `BUFADDR`, `TBBCNT`, the wrapper's `IP_DESC0..3`
+mirror of the descriptor it fetched):
+
+1. **SB2 holds CPU writes back** until its sync register is written
+   (`0x9801a020`). The DMAC fetched the previous transfer's descriptors.
+   The BSP syncs after every register write.
+2. **The DMAC does not stop after the last descriptor.** It follows the
+   next pointer and runs a stale descriptor that still says OWN -- it never
+   clears OWN -- into a freed buffer; with no next pointer, from address 0.
+   It then sits parked there and ignores a new DBADDR. The chain now ends
+   on a descriptor it does not own, and the DMAC is reset and restarted
+   from DBADDR for every transfer. The `IP_DESC` registers showing the
+   *previous load's* descriptor during a new transfer is what gave it away.
+3. **Data-transfer-over comes before a read's DMA is done.** Completion
+   waits for `TBBCNT` to reach the size and the wrapper's `DMA_DONE`.
+4. **u-boot leaves the eMMC PLL with its HS200 phases.** The first read
+   after probe then got no data from the card at all, some boots and not
+   others. The driver sets the PLL to 100 MHz with the phases at 0, as the
+   BSP does at init.
+
+Wrong turns, for the record: a theory that the DMAC uses only 28 bits of
+the next pointer (a reserved pool below 256 MiB "fixed" it, by chance), and
+the wrapper's `SWC_SEL1..3` (those are RTD139x registers; `0x4d8` reads
+0xdeadbeef here). Card init failing silently made several dd results
+meaningless; checking that the card had initialised first would have saved
+hours.
+
+Verified: 52 MHz, 8 bits, 38 MB/s read, 27 MB/s write; ten minutes of
+buffered writes with readback, repeated 1 GiB reads and four parallel
+memory checks, all equal, nothing in dmesg.
+
+### The image and booting it (2026-10-02)
+
+`make image-emmc` is the SD system with its own labels (`EMMC-BOOT`,
+`EMMC-ROOT`) and nothing before the first partition;
+`bpikvm-install-emmc` writes it from a running SD system and keeps the
+boot loader's area. The first boot from it hung in u-boot: `fatload` from
+the eMMC panics in BPI's driver, which refuses DMA below 0xe0000 where its
+own FAT buffers are. Like BPI's `bootr`, the environment now reads raw
+slots between the environment and the first partition with `mmc read`,
+which `bpikvm-emmc-bootsync` fills from `/boot` (on every change, through a
+.path unit, and from `push-kernel-mainline.sh` before it reboots).
+
+### Capture after the eMMC's u-boot (2026-10-03)
+
+Booted that way, the receiver measured the TMDS clock and then never
+locked: "Wait b/g/R lane koff timeout" and no sync. The Pi was blamed at
+first (its Kodi does stop sending after enough hotplugs, §10), and the
+cable. An A/B settled it: the same card and kernel through the SD card's
+u-boot (SW4 = 1) captured at once. A dump of CRT, ISO and the receiver's
+registers in both states, then the bad values written back a few at a time
+on a good board (bad ones in, receiver reloaded, does it lock?), found
+three things the SD card's u-boot leaves on and the eMMC's leaves off:
+
+| What | Off | Symptom |
+|---|---|---|
+| HDMI PLL (`PLL_HDMI` 0x190 power/reset/clock bits, `PLL_HDMI_LDO1` 0x230 bit 6 clear) | 0x80, bit 6 set | offset calibration times out on every lane |
+| The display block's reset, `RSTN_DISP` | in reset | clock measured, no sync ever decoded |
+| VODMA PLL (`PLL_VODMA2` 0x264), the MIPI block's clock | 0x4 | timings detected, MIPI registers read 0xdeadbeef, no frames |
+
+Each looked like the whole problem until the next stage showed. The last
+one hid behind `hdmirx-info` saying Ready; only a `v4l2-ctl --stream-mmap`
+count showed no frames. The receiver driver turns all three on if they are
+off (`hdmirx_clk_ctrl.c`), the HDMI PLL the way the BSP's DP driver
+prepares it, the VODMA PLL with the dividers a good boot leaves.
+
+### Audio after the eMMC's u-boot (2026-10-03)
+
+Every RPC to the audio CPU timed out. The serial log showed why: before
+`bootcmd`, this u-boot loads the AUDIO entry of the vendor firmware table
+at 0x620000 and starts the audio CPU on it ("Start Audio Firmware ...",
+after "FW Image sha FAILED"), and `go a` does nothing after that. The entry
+pointed into what had become the uImage slot. The table's format is the
+BSP u-boot's `fw_desc_table_v1_t`, version 2, with 64-byte entries and a
+byte-sum checksum; `bpikvm-emmc-bootsync` points the entry at the
+bluecore.audio slot with the right length and sha256. That was not enough:
+`emmcload` (and, booting the SD card, `bpiload`) loaded bluecore.audio
+again, over the running firmware -- its UART output stopped right at that
+`mmc read`. Neither loads it now. A boot stopped at the u-boot prompt also
+leaves the audio CPU dead, until the next boot.
+
+## 15. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -1735,3 +1889,8 @@ without its trailing newline, did not recognise the build, and said so
 | `vendor/bpi-w2-bsp/u-boot-rtk/include/configs/rtd1295_common.h` | `CONFIG_ETHADDR`, the MAC every board shares |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/rtd129x/rtk_ve/ve1/ve1.c` | VE1 power-on and the wrapper setup |
 | `BPI-SINOVOIP/BPI-1296-Android7` @ `d377aa6` | `ve1.bin`; `libvpu.so` and the `vpuapi` headers (CODA980 register use) |
+| BPI-W2 wiki, "Hardware files" (Google Drive) | `dvrboot.exe.bin` and the hwsetting for the eMMC boot loader (§14) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` | The eMMC controller's init, transfer and completion sequence (§14) |
+| `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14) |
+| `vendor/bpi-w2-bsp/u-boot-rtk/common/cmd_boot.c`, `arch/arm/include/asm/arch-rtd1295/fw_info.h` | `do_go_audio_fw()`, the firmware table format (§14) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/crt_reg.h`, `rtk_dptx/dptx_hwapi.c` | `PLL_HDMI`, `PLL_VODMA` fields; how the DP driver prepares the HDMI PLL (§14) |

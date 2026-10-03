@@ -11,11 +11,14 @@ both, and the two are not merged.
 ## 1. What works
 
 All of the following was verified on the board (BPI-W2, 2 GiB, Kodi on a
-Raspberry Pi as the HDMI source, a PC on the Type-C port) on 2026-10-01.
+Raspberry Pi 3 as the HDMI source, a PC on the Type-C port) on 2026-10-01;
+the eMMC rows, and capture and audio again on both boot paths (SD card
+system and eMMC system, both through the eMMC's u-boot), on 2026-10-03.
 
 | Feature | State | How it was verified | Where |
 |---|---|---|---|
-| Boot from SD | done | BSP u-boot from SPI + SD, 6.18 kernel, root on `mmcblk0p2`; no failed units | §5, §8 |
+| Boot from SD | done | BSP u-boot from SPI + SD (SW4 = 1), or the eMMC's u-boot with an SD card in (SW4 = 0); 6.18 kernel, root on `mmcblk0p2`; no failed units | §5, §8 |
+| Boot from eMMC | done | BPI's eMMC u-boot, no SD card, root on `mmcblk1p2`; capture, stream, Janus and audio as from the SD card | §5 of this file |
 | Four cores, interrupts | done | spin-table release through MMIO; RTD129x ISO/MISC interrupt muxes | §6 |
 | SD card (root) | done | own driver for the rtsx-style SD core, 50 MHz, ~25 MB/s read | §8 |
 | eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS 52 MHz 8-bit, 38 MB/s read, 27 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file |
@@ -23,7 +26,7 @@ Raspberry Pi as the HDMI source, a PC on the Type-C port) on 2026-10-01.
 | Reboot | done | watchdog restart handler | §9 |
 | USB host ports | done | hub and a card reader enumerate | §7 |
 | USB OTG (Type-C) | done | the target enumerates keyboard, mouse and mass storage | §7, §10 |
-| HDMI capture | done | 1080p60 from the receiver, EDID over DDC, NV12 | §10 |
+| HDMI capture | done | 1080p60 from the receiver, EDID over DDC, NV12; after either u-boot (§4 of this file) | §10 |
 | MJPEG stream | done | kvmd's ustreamer, ~22 fps of JPEG to a client | §10 |
 | H.264 encoding (VE1) | done | CODA980 through the mainline `coda` driver, 1080p, ~70 fps capacity | §11 |
 | Direct H.264 (kvmd-media) | done | the Web UI's H.264 mode | §11 |
@@ -65,6 +68,7 @@ make image-emmc                 # -> build/bpiw2-pikvm-mainline-emmc.img (3 GiB)
 | `kernel-mainline` | Copies `kernel/mainline/*` into the tree, merges `bpiw2.config` on top of arm64 defconfig, builds | `arch/arm64/boot/Image`, the board dtb, modules |
 | `rootfs-arch` | ALARM aarch64 tarball, PiKVM's repository, ustreamer and kvmd built from our patched trees, Janus and kvmd-webterm from PiKVM | `build/rootfs-arch.tar` |
 | `image-mainline` | Boot partition (u-boot's files, the kernel with its text offset patched, the audio firmware), rootfs, modules, VPU firmware | `build/bpiw2-pikvm-mainline.img` |
+| `image-emmc` | The same system for the eMMC: partitions labelled `EMMC-BOOT`/`EMMC-ROOT`, nothing before the first partition; install it with `bpikvm-install-emmc` (§5) | `build/bpiw2-pikvm-mainline-emmc.img` |
 
 `make image` and the targets without `-mainline` build the BSP 4.9 line
 with its Debian rootfs, as on `main`.
@@ -75,7 +79,10 @@ with its Debian rootfs, as on `main`.
 sudo dd if=build/bpiw2-pikvm-mainline.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
-- SW4 = 1 (SPI + SD). The Type-C port goes to the target machine.
+- SW4 = 1 (SPI + SD) boots the SD card's u-boot. SW4 = 0 boots the eMMC's
+  u-boot, which, once flashed and set up as in §5, also boots the SD card
+  when one is in, and the eMMC system when not. The Type-C port goes to
+  the target machine.
 - The first boot grows the root partition and generates the SSH host keys
   and the TLS certificate. The image itself carries no keys.
 - Web UI: `https://<board IP>/`, `admin` / `admin`. Console (serial
@@ -85,10 +92,13 @@ sudo dd if=build/bpiw2-pikvm-mainline.img of=/dev/sdX bs=4M conv=fsync status=pr
 
 | Script | Use |
 |---|---|
-| `scripts/push-kernel-mainline.sh [--modules] [--reboot]` | Install a new kernel, dtb and modules over ssh (`BOARD_HOST=<ip>`); the old ones stay as `*.prev` |
+| `scripts/push-kernel-mainline.sh [--modules] [--reboot]` | Install a new kernel, dtb and modules over ssh (`BOARD_HOST=<ip>`); the old ones stay as `*.prev`. On an eMMC system it also refreshes the raw boot slots (§5) |
 | `scripts/board-ssh.sh '<cmd>'`, `--put <local> <remote>` | Run a command on the board, copy a file to it |
 | `scripts/boot-prev-kernel.sh [--restore]` | Over the serial console, boot `uImage.prev` once |
 | `scripts/uboot-cmd.sh`, `scripts/serial-cmd.sh` | Drive u-boot or a shell on the serial port |
+| `tools/emmc/romflash.py` | Flash the eMMC boot loader through the SoC ROM's serial download mode (§5) |
+| `tools/emmc/ubstop.py`, `ubcmd.py`, `uboot-env.txt` | Stop the eMMC's u-boot (bootdelay 0) and run commands; its environment (§5) |
+| `bpikvm-install-emmc`, `bpikvm-emmc-bootsync` (on the board) | Install the eMMC image from a running SD system; keep the eMMC's raw boot slots and firmware table in step with `/boot` (§5) |
 
 A module can be rebuilt and replaced without a reboot: `make kernel-mainline`,
 copy the `.ko` into `/usr/lib/modules/6.18.*/`, and `rmmod`/`modprobe`
@@ -111,6 +121,7 @@ cannot be unloaded.
 | 0011 | Hooks for the HDMI receiver driver |
 | 0012 | The CODA980 (VE1) in the `coda` driver |
 | 0013 | Hooks for the audio CPU and HDMI audio drivers |
+| 0014 | The eMMC host |
 
 ### Out-of-tree files (`kernel/mainline`), copied in at build time
 
@@ -118,7 +129,7 @@ cannot be unloaded.
 |---|---|
 | `rtd1296-bananapi-w2.dts` | The board: reserved memory for the Realtek firmware, every device |
 | `bpiw2.config` | The config fragment on top of arm64 defconfig |
-| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c` | Drivers behind patches 0003, 0007, 0008, 0010 |
+| `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014 |
 | `hdmirx/` | The HDMI receiver: Realtek's BSP driver with a new V4L2 side |
 | `acpu/` | `rtd129x-acpu` (RPC to the audio CPU firmware) and `snd-rtd129x-hdmirx` (ALSA capture) |
 | `diag/` | A diagnostic initramfs used during bring-up |
@@ -134,7 +145,8 @@ cannot be unloaded.
 | `overlay/usr/lib/kvmd/main.yaml`, `overlay/usr/lib/kvmd/platform` | kvmd's platform configuration for this board |
 | `overlay/etc/kvmd/janus/janus.plugin.ustreamer.jcfg` | Janus: the H.264 sink and the `hdmirx` audio |
 | `overlay/usr/lib/udev/rules.d/99-kvmd-bpi-w2.rules` | Device names kvmd expects (`/dev/kvmd-video`, `/dev/kvmd-h264`, ...) |
-| `overlay/usr/local/bin/bpikvm-*` | First boot: grow the root, generate keys |
+| `overlay/usr/local/bin/bpikvm-*` | First boot: grow the root, generate keys; the eMMC installer and boot-slot sync (with `bpikvm-emmc-bootsync.path`) |
+| `tools/emmc/` | Flashing the eMMC boot loader, driving its u-boot, its environment |
 | `overlay-bsp/` | What only the BSP image gets (no H.264, NV16 capture) |
 
 ### Firmware the image carries, not built here
@@ -144,10 +156,14 @@ cannot be unloaded.
 - `bluecore.audio`, the audio CPU's firmware, from the BSP.
 - The CODA980 firmware (`vpu_fw`), downloaded by
   `scripts/fetch-vpu-firmware.sh`.
+- Not in any image: the eMMC boot loader (BPI's `dvrboot.exe.bin` and
+  hwsetting from the BPI-W2 wiki), flashed once per board (§5).
 
 ## 4. Things to know
 
-- **The audio CPU.** u-boot starts the audio firmware before the kernel.
+- **The audio CPU.** u-boot starts the audio firmware before the kernel:
+  the SD card's u-boot with `go a` from the files it loads, the eMMC's
+  u-boot by itself from its firmware table, before `bootcmd` (§5).
   `rtd129x-acpu` completes its start-up; without that module nothing breaks,
   but there is no audio. The firmware's debug output ("HDMI not enabled"
   every 3 s on the serial console) is turned off by the driver, by clearing
@@ -177,7 +193,9 @@ cannot be unloaded.
 
 ## 5. eMMC
 
-Status on 2026-10-02: **the system runs from the eMMC**, with no SD card.
+Status on 2026-10-03: **the system runs from the eMMC**, with no SD card,
+including capture and audio. (2026-10-02: driver, image, installer, boot
+from the eMMC; 2026-10-03: capture and audio after the eMMC's u-boot.)
 Three parts: a boot loader on the eMMC (flashed once, over the serial
 port), a kernel driver for the eMMC, and an image plus an installer.
 
@@ -198,7 +216,8 @@ and nothing before the first partition: `bpikvm-install-emmc` writes sector
 the raw boot slots (below). The root grows to fill the eMMC on the first
 boot, as on the SD card. Verified: the installed image read back
 identical, and the board booted from it (`root=/dev/mmcblk1p2`) into the
-whole PiKVM stack -- capture, stream, Janus, audio.
+whole PiKVM stack -- capture, stream, Janus, audio (the last two only
+after the fixes in §4 and below, 2026-10-03).
 
 ### The bootloader on the eMMC (done)
 
@@ -247,8 +266,10 @@ first (fatload from its FAT partition), then the eMMC, then falls back to
 the vendor's `bootr`. Two settings matter beyond the file names:
 `audio_loadaddr=0x0f900000` (the firmware's link address; the default
 0x01b00000 breaks the ACPU) and `initrd_high=0xffffffffffffffff` (else
-"ramdisk - allocation error"). Kept for recovery, from the bring-up:
-`bootprev` (as bootsd, with uImage.prev and bpi-w2.dtb.prev).
+"ramdisk - allocation error"). Left over from the bring-up, in the saved
+environment but not in `uboot-env.txt`: `bootprev` (as bootsd, with
+uImage.prev and bpi-w2.dtb.prev; set up before the audio finding below,
+so expect it to boot without audio) and `bootnoemmc` (obsolete).
 
 **This u-boot cannot read files from its eMMC.** BPI's eMMC driver in it
 refuses any DMA below 0xe0000 -- `panic: dma_addr = 0x000cd0c0`, and the
