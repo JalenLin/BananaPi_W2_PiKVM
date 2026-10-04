@@ -56,7 +56,14 @@ and the 3 GB went over without a stall. They were rebuilt again at `c371e00`, af
 the stress tests: SB2 drained on every `writel()` (patch 0018), and coda
 and the HDMI receiver on their own memory pools. Both images were checked
 for keys (none). The eMMC image is on the board's eMMC and read back md5
-equal; the 3 GB went over eth0 without a stall.
+equal; the 3 GB went over eth0 without a stall. Booted from the eMMC alone
+(SW4 = 0, no card): first boot made its own keys and keyring and grew
+root to 6.8 GiB; HS200; the three memory pools assigned; no failed unit.
+1080p60 capture, H.264 at 24 fps, HID online. An MSD upload compared md5
+equal, and 4 upload/remove rounds went through. The MAC came from the
+machine ID and stayed the same, with the same address, over a reboot. A
+line printed on tty1 showed up in the capture of the board's own HDMI
+output, and the DP output showed on the monitor.
 
 **Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
 kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
