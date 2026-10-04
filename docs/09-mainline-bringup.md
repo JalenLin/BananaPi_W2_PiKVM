@@ -2621,6 +2621,16 @@ run (SD writes + MSD traffic + everything else; load average about 12).
 Reports were late, not lost as far as the counts show. Runs without SD
 writes had no such pauses.
 
+This was the test, not the board. A probe on the board that sends the
+keys and logs its own lateness found the Pi's 3.3 s gap at the same
+second in the sender itself, before kvmd. The SD load in that run
+dropped the page cache after every 256 MiB file (`drop_caches`, to read
+the file back from the card). That also drops every program's code.
+Paging it back in from a card busy with writeback stalled them for
+seconds. With the same writes and fsyncs but no `drop_caches`, the sender
+was never 0.5 s late in 16 minutes. That held under mq-deadline and bfq,
+with dirty_ratio 20 % and with dirty_bytes 32 MiB. So nothing to change.
+
 ## 23. Sources
 
 | Source | Used for |
