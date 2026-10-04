@@ -189,12 +189,15 @@ Two things worth knowing before they surprise anyone:
 The HDMI port next to the HDMI input shows a Linux console (`tty1`, with a
 login prompt) at 1080p60, the mode the boot loader sets. A USB keyboard on
 the board's USB ports types into it. It is a DRM device
-(`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as well. The
-mini DisplayPort output does nothing.
+(`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as well.
+
+The mini DisplayPort output has a driver that is not yet proven. Passive
+mini DP to HDMI adapters (most cheap ones, e.g. ATEN VC980) cannot work
+on this board at all: it has no DP++ dual mode.
 
 ## 8. What is not there
 
 ATX power control is prepared but off (`10-mainline-summary.md` §7). Not
-there: the mini DisplayPort output, the second Ethernet port, and audio
+there: a proven mini DisplayPort output, the second Ethernet port, and audio
 towards the controlled machine. The full list, with what each would need,
 is in §1 of `10-mainline-summary.md`.

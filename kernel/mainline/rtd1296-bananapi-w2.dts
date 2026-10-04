@@ -522,6 +522,25 @@
 	};
 
 	/*
+	 * The mini DisplayPort output. The audio firmware's video output
+	 * feeds it; rtd129x-vo (kernel/mainline/acpu/acpu-dp.c) sets up the
+	 * transmitter and trains the link when the HPD line (ISO GPIO 7)
+	 * goes high. Registers: the transmitter, the LVDS/AIF timing
+	 * generator in front of it, and VO's DP output switch. Mapped, not
+	 * claimed: VO is the firmware's.
+	 */
+	dptx: dp@3d000 {
+		compatible = "realtek,rtd1295-dptx";
+		reg = <0x3d000 0x1000>, <0x9400 0x600>, <0x5000 0x1000>;
+		clocks = <&crt_clk 14>, <&crt_clk 16>;	/* CLK_EN1: TVE, LVDS */
+		clock-names = "tve", "lvds";
+		resets = <&reset1 RTD1295_RSTN_TVE>, <&reset1 RTD1295_RSTN_LVDS>;
+		reset-names = "tve", "lvds";
+		realtek,crt = <&crt>;	/* the pixel and link PLLs */
+		realtek,iso = <&iso>;	/* HPD, ISO GPIO 7 */
+	};
+
+	/*
 	 * The 8 GB eMMC: a DesignWare MSHC with a Realtek wrapper at +0x400
 	 * (kernel/mainline/emmc-rtd129x.c). The boot loader has set up its
 	 * pins, pads and 1.8 V; the driver sets the EMMC PLL in CRT, and

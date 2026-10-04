@@ -98,9 +98,11 @@ Not done:
   boot loader flashed (`romflash.py`) and its u-boot environment set
   (`uboot-env.txt` through `ubstop.py`) over the serial console once,
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
-- **The mini DisplayPort output**: nothing drives it. The firmware's video
-  output feeds it too, but the DP transmitter needs its own setup and link
-  training (the BSP's `rtk_dptx`).
+- **The mini DisplayPort output**: a driver is in `rtd129x-vo` (setup,
+  AUX, link training, then the firmware mirrors HDMI to it) but has not
+  been seen working. The only thing tried was a passive mini DP to HDMI
+  adapter (ATEN VC980), and the board cannot drive one: no DP++ dual
+  mode. It needs a DP monitor or an active adapter (`docs/09` §20).
 - **Other HDMI output modes**: the output runs at the mode the boot loader
   set (1080p60); the driver does not change it or read the monitor's EDID.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not possible

@@ -2355,13 +2355,58 @@ own HDMI IN, with kvmd's snapshot as the camera.
 - HDMI-in audio capture still works alongside it (`arecord` on
   `hw:hdmirx`).
 
+### The mini DisplayPort output (written, not yet seen working)
+
+The firmware's VO feeds the DP transmitter too, but the transmitter is the
+ARM side's to set up. u-boot does not touch it (`CONFIG_DPTX_MODE` is off
+in BPI's build), and the BSP kernel does it in `rtk_dptx`, driven by
+Android's display service. `kernel/mainline/acpu/acpu-dp.c`, part of
+`rtd129x-vo`, follows that driver for 1080p60 on two lanes at 2.7 Gb/s.
+
+- **HPD** is ISO GPIO 7 (`0x98007108` bit 7), polled once a second.
+- **Power.** The `realtek,rtd1295-dptx` node turns on the TVE and LVDS
+  clocks (CLK_EN1 bits 14 and 16) and releases their resets. Until then
+  the transmitter's registers read 0xdeadbeef.
+- **PLLs.** The pixel PLL (`PLL_PIXEL1/2`, `PLL_SSC_DIG_PIXEL0-2`) and the
+  link PLL (`PLL_EDP1/2`, `PLL_SSC_DIG_EDP0-4`), as in `dptx_hwapi.c`. The
+  BSP's first step on `PLL_HDMI`/`PLL_HDMI_LDO1` is already in place here.
+  `DISP_PLL_DIV2` is changed only in bits 16-22; the BSP writes it whole.
+- **Timing and stream.** The LVDS/AIF timing generator for 1080p, M/N
+  measured as the BSP measures it, the main stream attributes, the
+  transfer unit size, and VO's DP output switch (`0x98005e78` = 3).
+- **AUX** goes through `drm_dp_aux`, polled. Event bit 0 only means the
+  request went out; it is done on bit 5 (reply) or bit 1 (error), which is
+  what u-boot waits for. The first version stopped at bit 0 and failed
+  every request.
+- **Link training** uses the DRM DP helpers (clock recovery, then channel
+  equalisation), with the BSP's drive table for the PHY.
+- **Then the firmware is told.** Kernel RPC 35 queries the TV system it
+  runs, and the driver changes two fields: `interfaceType` (4, HDMI and
+  DP from the same source) and `videoInfo.pedType` (60, DP 1080p60). It
+  sends the result back with kernel RPC 27. The query's data shows the
+  real layout: `pedType` is at offset 12, not the 16 that one byte of
+  padding too many gives.
+
+Tried on 2026-10-04 with an ATEN VC980 (mini DP to HDMI) into the board's
+own HDMI IN:
+
+- HPD came up and the transmitter powered.
+- No AUX request was ever answered: error after 7 hardware retries,
+  every time.
+- The VC980 is a passive adapter: it needs a dual-mode (DP++) source that
+  sends TMDS, and treats the AUX pins as the HDMI DDC. This board has
+  neither. CONFIG1/CONFIG2 go only to 1 MOhm to ground (schematic page 7),
+  and the transmitter has no TMDS mode.
+
+So passive adapters cannot work here, whatever the driver does. Everything
+past the AUX layer is still unverified. Checking it needs a DP monitor or
+an active adapter (one with a converter chip, usually USB-powered).
+
 Not done:
 
 - The mode stays what u-boot set. Changing it would go through kernel RPC
   27 (`ConfigTVSystem`), with the monitor's EDID read over the
   transmitter's DDC.
-- The mini DisplayPort output needs the DP transmitter set up and trained
-  (the BSP's `rtk_dptx`).
 
 ## 21. Sources
 
@@ -2389,6 +2434,7 @@ Not done:
 | `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14); its HS200 pad drive (§19) |
 | `kisgezenguz/linux-4.9` `drivers/video/fbdev/rtk/rtk_fb_RPC.c` | The order of the VO calls that put OSD1 on screen (§20) |
 | `Realtek-OpenSource/android_device_realtek` `proprietary/libs/rtk_libs/common/IPC` | `AudioRPC_System.h` (program 201, the video procedure numbers), `RPCstruct.h`, the argument structures (§20) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_dptx/`, `u-boot-rtk/drivers/logo_disp/logo_disp_dptx.c` | The DP transmitter: PLLs, timing, M/N, AUX, link training, the TV-system RPCs (§20) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/video/fbdev/rtk/dc2vo/` | The ring header, the picture object, `ICQ_WriteCmd()`, the VO kick (§20) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/drivers/logo_disp/`, `common/cmd_boot.c` | `VO_RESOLUTION` and `boot_av`, how u-boot sets the firmware's TV system (§20) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` `phase()`, `rtkemmc_phase_tuning()`, `search_best()` | The PLL phases, how they change, the three tuning scans; the 512-byte DMA minimum (§19) |

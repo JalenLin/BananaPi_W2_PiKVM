@@ -6,4 +6,4 @@ obj-$(CONFIG_SND_RTD129X_HDMIRX) += snd-rtd129x-hdmirx.o
 snd-rtd129x-hdmirx-y := acpu-pcm.o
 
 obj-$(CONFIG_RTD129X_VO) += rtd129x-vo.o
-rtd129x-vo-y := acpu-vo.o
+rtd129x-vo-y := acpu-vo.o acpu-dp.o

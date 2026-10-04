@@ -46,7 +46,7 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
-#include "rtd129x-acpu.h"
+#include "acpu-vo.h"
 
 /* AUDIO_SYSTEM procedures (AudioRPC_System.h) */
 #define VIDEO_RPC_ToAgent_Create			1010
@@ -120,17 +120,6 @@ struct vo_refclock {
 #define AVSYNC_FORCED_SLAVE	0
 #define AVSYNC_FORCED_MASTER	1
 
-struct rtd_vo {
-	struct drm_device drm;
-	struct drm_simple_display_pipe pipe;
-	struct drm_connector connector;
-
-	struct device *dev;
-	struct rtd_acpu *acpu;
-	struct rtd_acpu_buf shared;	/* ring, header, refclock */
-	u32 instance;
-	u32 context;
-};
 
 /*
  * The arguments go as the firmware's C structures, big-endian, laid out as
@@ -194,6 +183,41 @@ static int vo_call(struct rtd_vo *vo, u32 procedure, const u32 *args, u32 n)
 	int got = vo_rpc(vo, procedure, args, n, &res, 1);
 
 	return vo_check(vo, procedure, got, res);
+}
+
+/* A kernel RPC with a TV system as its argument and as its result */
+static int vo_tv_system_call(struct rtd_vo *vo, u32 cmd, u8 *tv)
+{
+	u32 param = rtd_acpu_addr(vo->param.phys), ret;
+	int err;
+
+	memcpy(vo->param.vaddr, tv, VO_TV_SYSTEM_SIZE);
+	wmb();
+	err = rtd_acpu_call(vo->acpu, cmd, param, param + VO_TV_SYSTEM_SIZE,
+			    &ret);
+	if (err)
+		return err;
+	if (ret != RTD_ACPU_S_OK) {
+		dev_err(vo->dev, "kernel RPC %u: %#x\n", cmd, ret);
+		return -EIO;
+	}
+	memcpy(tv, vo->param.vaddr + VO_TV_SYSTEM_SIZE, VO_TV_SYSTEM_SIZE);
+	return 0;
+}
+
+/* The TV system the firmware runs, VO_TV_SYSTEM_SIZE bytes */
+int vo_query_tv_system(struct rtd_vo *vo, u8 *tv)
+{
+	memset(tv, 0, VO_TV_SYSTEM_SIZE);
+	return vo_tv_system_call(vo, VO_KRPC_QUERY_TV_SYSTEM, tv);
+}
+
+int vo_config_tv_system(struct rtd_vo *vo, const u8 *tv)
+{
+	u8 buf[VO_TV_SYSTEM_SIZE];
+
+	memcpy(buf, tv, sizeof(buf));
+	return vo_tv_system_call(vo, VO_KRPC_CONFIG_TV_SYSTEM, buf);
 }
 
 /* VIDEO_RPC_VO_FILTER_DISPLAY */
@@ -492,7 +516,8 @@ static int vo_probe(struct auxiliary_device *adev,
 	vo->dev = dev;
 	vo->acpu = aadev->acpu;
 
-	ret = rtd_acpu_alloc(vo->acpu, VO_SHARED_SIZE, &vo->shared);
+	ret = rtd_acpu_alloc(vo->acpu, VO_SHARED_SIZE, &vo->shared) ?:
+	      rtd_acpu_alloc(vo->acpu, 2 * VO_TV_SYSTEM_SIZE, &vo->param);
 	if (ret)
 		goto err_rmem;
 	ret = vo_start(vo);
@@ -507,6 +532,11 @@ static int vo_probe(struct auxiliary_device *adev,
 		goto err_shared;
 	auxiliary_set_drvdata(adev, vo);
 	drm_client_setup(&vo->drm, NULL);
+
+	/* the DisplayPort output shows the same picture, if there is one */
+	ret = vo_dp_init(vo);
+	if (ret)
+		dev_warn(dev, "no DisplayPort output: %d\n", ret);
 	return 0;
 
 err_shared:
