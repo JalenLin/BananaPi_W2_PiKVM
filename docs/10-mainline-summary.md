@@ -72,7 +72,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | SD card (root) | done | own driver for the rtsx-style SD core, 50 MHz, ~25 MB/s read | §8 |
 | SD card from the eMMC system | done | the driver powers the card, starts the controller and tunes the bus itself, so an SD card works as a data disk while the root is the eMMC's -- 4-bit 50 MHz, 29.7 MB/s; hot-plug too (the host polls) | §5 of this file |
 | Virtual media store | done | its own partition on the SD image (`BPI-MSD`, the rest of the card), as PiKVM does it; on the eMMC image a directory, or a card dedicated with `bpikvm-msd-sd`. kvmd uploads an ISO onto either through its API | §6 of this file |
-| eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS 52 MHz 8-bit, 38 MB/s read, 27 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file |
+| eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS200: 200 MHz 8-bit with the BSP's phase tuning, 113 MB/s read, 39 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file, `09` §19 |
 | Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network | §9 |
 | Reboot | done | watchdog restart handler | §9 |
 | USB host ports | done | hub and a card reader enumerate | §7 |
@@ -98,8 +98,6 @@ Not done:
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
 - **The board's own HDMI output**: no driver; the console is the serial port
   and the network. PiKVM itself does not need it.
-- **eMMC HS200**: the eMMC runs at High Speed (52 MHz, 38 MB/s read); HS200
-  would need the BSP's phase tuning (§5 of this file).
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
 - **ATX power control**: not wired on this board.
 - **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers. The
@@ -434,7 +432,24 @@ out of that and was wrong.
 Result: High Speed, 8 bits, 52 MHz: 38 MB/s read, 27 MB/s write. Ten
 minutes of 512 MiB buffered writes with readback, 1 GiB reads compared
 twice and four parallel memory checks all came out equal, with nothing in
-dmesg. HS200 (200 MHz) would need the BSP's phase tuning.
+dmesg.
+
+HS200 (2026-10-04, `09` §19): the PLL at 200 MHz and the BSP's three
+phase scans, done with the tuning block (CMD21) instead of the BSP's
+write to block 0xfe. Two more things the hardware needs:
+
+- **No DMA under 512 bytes.** After a DMA of the 128-byte tuning block
+  the DMAC goes wrong on the next transfer. Shorter blocks are read from
+  the FIFO.
+- **The FIFO is 64 bits wide, read 32 bits at a time:** low half at
+  0x200, high half at 0x204.
+
+A bad phase can hang the data state machine with no timeout, so tuning
+commands time out in software after 50 ms, and a data error resets the
+whole controller. If tuning fails, the driver drops HS200 and the core's
+second try (from `f_min`, 300 kHz) comes up at High Speed. Result: TX 18
+and RX 21, as the boot loader's own tuning, 113 MB/s read and 39 MB/s
+write, 5 minutes of write/readback equal.
 
 Testing traps:
 

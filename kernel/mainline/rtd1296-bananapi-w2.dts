@@ -510,8 +510,9 @@
 		realtek,crt = <&crt>;	/* the EMMC PLL */
 		realtek,sb2 = <&sb2>;	/* to sync posted writes before DMA */
 		bus-width = <8>;
-		max-frequency = <52000000>;
+		max-frequency = <200000000>;
 		cap-mmc-highspeed;
+		mmc-hs200-1_8v;
 		non-removable;
 		no-sd;
 		no-sdio;

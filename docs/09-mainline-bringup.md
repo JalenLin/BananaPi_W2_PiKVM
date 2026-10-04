@@ -176,7 +176,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **M6** | mmc host driver | **done** 2026-09-23: one card in the slot boots to a login with root on `mmcblk0p2`; 512 MiB write/read-back verified -- see §8. High speed (50 MHz, ~25 MB/s read) 2026-10-01 |
 | **H.264** | the `coda` driver on VE1, firmware, ustreamer's single-planar M2M, Janus | **done** 2026-10-01: 1080p H.264 from the HDMI capture, in kvmd as direct H.264 (kvmd-media) and WebRTC (kvmd-janus) -- see §11 |
 | **Audio** | RPC to the audio CPU's firmware, an ALSA capture device, Janus | **works** 2026-10-01: the firmware runs its full start-up, the capture device delivers 48 kHz stereo, and WebRTC carries it as Opus; music from Kodi comes through clean -- see §13 |
-| **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14 |
+| **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14; 2026-10-04: HS200, 200 MHz, 113/39 MB/s -- see §19 |
 | **Thermal** | the CPU temperature sensor | **done** 2026-10-03: `thermal_zone0`, shown by kvmd -- see §15 |
 | **cpufreq** | the CPU clock, the PMIC, OPPs, cooling | **done** 2026-10-03: 300 MHz - 1.4 GHz with the BSP's voltages, the L2 rail following -- see §16 |
 
@@ -2182,7 +2182,75 @@ both kinds of store, the combined HID is online, and ustreamer logs
 "CPU governor changed to performance" when a client arrives and
 "... to schedutil" when it leaves.
 
-## 19. Sources
+## 19. eMMC HS200 (2026-10-04)
+
+The eMMC (a Samsung 8GME4R, `EXT_CSD` card type 0x57) can do HS200 and
+HS400; the driver ran it at High Speed, 52 MHz. HS200 is 200 MHz, single
+data rate, 8 bits, and needs the host to tune when it samples.
+
+What the BSP does (`rtkemmc.c`, `rtkemmc_phase_tuning()`):
+
+- The EMMC PLL to 200 MHz (code 0xa6), the core's divider off.
+- The PLL has two phases, 0-31 each, in `SYS_PLL_EMMC1`: TX (bits 7:3)
+  and RX (bits 12:8). To change one, the wrapper's clock is switched to
+  4 MHz (`CKGEN_CTL` bits 18:16), the PLL held in reset (bit 1), the phase
+  written, the reset released and 200 us waited.
+- Three scans: TX with CMD13, RX with a 1 KiB read at block 0x100, TX
+  again with a 1 KiB **write** at block 0xfe. Each takes the middle of the
+  longest passing run.
+- By default it does none of that and inherits the phases the boot loader
+  left, which the FSBL tunes on the eMMC boot path.
+
+The driver now does the same scans from `execute_tuning`, with the tuning
+block (CMD21) in place of the read and the write. That write would
+overwrite block 0xfe, two blocks below the hwsetting at 0x100, inside the
+area the eMMC boot loader occupies (docs/10 §5). Nothing should write
+there.
+On this board the scans give TX 18 and RX 21; the FSBL had left TX 18 and
+RX 20-21, so the two agree.
+
+Three things were in the way:
+
+1. **The DMAC cannot do a 128-byte block.** After one DMA of the tuning
+   block, every later transfer ran to a buffer address made of tuning
+   data (0xcc33ccc8, from the DMAC's buffer register), though the
+   descriptors in memory were right. A full controller reset did not set
+   it straight. The BSP has a comment on this ("the smallest DMA size is
+   512 byte") and only does 512-byte transfers. Blocks under 512 bytes
+   now go through the FIFO, with the DMAC left alone. On eMMC that is
+   only the tuning block.
+2. **The FIFO is 64 bits wide** (`HCON` 0x00c46d41, H_DATA_WIDTH 2), and
+   the bus only takes 32-bit reads. An entry is its low half at `DATA`
+   (0x200) and its high half at 0x204. A 64-bit read gives the low half
+   twice, and a 32-bit read of 0x200 alone gets half of each entry. The
+   first try read half the block and left the rest in the FIFO. The next
+   DMA then took it and hung.
+3. **A bad phase can hang the data state machine.** With the response
+   right and the data's start bit missed, the core waits for data and no
+   data timeout comes. Tuning commands get a 50 ms software timeout, and
+   any data error now resets the whole controller (`CTRL` resets, then the
+   clock update command, as `dw_mmc` does), not just the FIFO and DMA.
+
+If tuning fails anyway, the card is already in HS200 and the MMC core
+drops it. The driver clears `MMC_CAP2_HS200` before it returns the error.
+`f_min` is 300 kHz, so the core tries the card once more, from 300 kHz,
+and that attempt comes up at High Speed. This was tested once with a
+forced failure: the card came up at HS, 8 bits, and read back equal.
+
+Verified, running from the SD card with the eMMC as a second disk:
+
+- 200 MHz, 8 bits, HS200, with the same phases on every boot.
+- 113 MB/s read (was 38) and 39 MB/s buffered write (was 27).
+- The whole 7.3 GiB device read twice, equal.
+- The boot partition equal to the image it was written from.
+- 5 minutes of 512 MiB writes with readback plus raw reads: 11 rounds,
+  all equal, nothing in dmesg.
+
+Pad drive is left as the boot loader sets it: 0xbb for clock, command and
+data (`PDRIVE_NF1..3`), which is u-boot's HS200 setting
+(`pad_driving(0xbb, 0xbb, 0xbb, 0x33)`).
+
+## 20. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -2205,6 +2273,7 @@ both kinds of store, the combined HID is online, and ustreamer logs
 | `BPI-SINOVOIP/BPI-1296-Android7` @ `d377aa6` | `ve1.bin`; `libvpu.so` and the `vpuapi` headers (CODA980 register use) |
 | BPI-W2 wiki, "Hardware files" (Google Drive) | `dvrboot.exe.bin` and the hwsetting for the eMMC boot loader (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` | The eMMC controller's init, transfer and completion sequence (§14) |
-| `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14) |
+| `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14); its HS200 pad drive (§19) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` `phase()`, `rtkemmc_phase_tuning()`, `search_best()` | The PLL phases, how they change, the three tuning scans; the 512-byte DMA minimum (§19) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/common/cmd_boot.c`, `arch/arm/include/asm/arch-rtd1295/fw_info.h` | `do_go_audio_fw()`, the firmware table format (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/crt_reg.h`, `rtk_dptx/dptx_hwapi.c` | `PLL_HDMI`, `PLL_VODMA` fields; how the DP driver prepares the HDMI PLL (§14) |
