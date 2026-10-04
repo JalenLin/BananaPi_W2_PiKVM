@@ -121,7 +121,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | WebRTC (Janus) | done | 1920x1080 at ~30 fps to a headless WebRTC client | §11 |
 | HDMI audio | done | ALSA card `hdmirx`, 48 kHz stereo; music from Kodi over WebRTC (Opus) | §13 |
 | Keyboard, mouse | done | through kvmd to the target | §10 |
-| Virtual media (MSD) | done | image upload and connect through kvmd | §10 |
+| Virtual media (MSD) | done | image upload and connect through kvmd. Under load (network + eMMC + SD + H.264 + HID), a Pi 3 host read 45 GiB and wrote 1.5 GiB raw, every MiB checked, no error and no bus reset. That needs the SB2 drain on every `writel()`: without it the host gave up on a READ within minutes | §10, `docs/09` §21 |
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz, at the BSP's voltages from 1.2 GHz up and at 1.0 V below (a reset button or watchdog reset keeps the PMIC's voltage, and the boot ROM hangs on the BSP's 0.8 V), the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |

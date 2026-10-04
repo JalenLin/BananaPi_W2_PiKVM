@@ -55,6 +55,7 @@ cp /work/kernel/mainline/clk-rtd129x-crt.c drivers/clk/clk-rtd129x-crt.c
 cp /work/kernel/mainline/clk-rtd129x-scpu.c drivers/clk/clk-rtd129x-scpu.c
 cp /work/kernel/mainline/g2227-regulator.c drivers/regulator/g2227-regulator.c
 cp /work/kernel/mainline/rtd129x-thermal.c drivers/thermal/rtd129x-thermal.c
+cp /work/kernel/mainline/rtd129x-sb2-sync.c arch/arm64/kernel/rtd129x-sb2-sync.c
 rm -rf drivers/media/platform/realtek-rtd129x-hdmirx
 cp -r /work/kernel/mainline/hdmirx drivers/media/platform/realtek-rtd129x-hdmirx
 rm -rf sound/realtek-rtd129x-acpu

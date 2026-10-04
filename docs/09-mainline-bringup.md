@@ -2516,14 +2516,58 @@ load each time:
 | B | on | ~77 GB | 0 |
 | final kernel (debug code removed) | on | ~77 GB | 0 |
 
-### Other drivers
+### Every driver: the barrier in writel()
 
-The same applies to every driver that hands memory to a DMA master after
-a `wmb()`: dwc3 (the gadget: HID and MSD), xhci/ehci, coda (VE1), and this
-project's SD host (`sdmmc-rtd129x.c` does not sync). None has shown a
-problem. The SD image written from the eMMC system read back equal more
-than once, and MSD uploads compare equal. But none was tried under this
-kind of load. The eMMC driver and the audio CPU RPC already sync.
+The per-driver sync was not the whole story. Under the same load eth0
+stalled once more, and the USB gadget had a fault of its own.
+
+**The rig.** The Pi 3 on the Type-C port is the USB host. kvmd serves a
+1 GiB random image as a flash drive. The Pi reads `/dev/sda` raw
+(O_DIRECT) and checks a CRC32 per MiB against the board's list, and it
+counts the keyboard's raw reports on its hidraw. Meanwhile the board
+sends a LeftShift every 20 ms, pulls H.264 and MJPEG from kvmd, reads
+both eMMC partitions against their md5, and takes TCP from the build
+host. Optionally it also writes and checks files on the SD card.
+
+**The fault.** After 3 to 40 minutes the Pi's usb-storage waited 30 s for
+a READ, reset the device, and did so once more. Its reads then hung for
+good (`dwc_otg ... ep2in scatterlist error -121`). On the board:
+`End Point Request ERROR: -108`, and the gadget idle with a TRB armed on
+ep1out for the next command. The data was never wrong (0 bad MiB in
+every pass), and the MSD image's read latency on the board stayed under
+0.4 s. So the bridge was not the SD card. It was a transfer that never
+went out.
+
+**The cause.** On Realtek's 4.9 kernel, arm64 `__iowmb()` is `wmb()`,
+and `wmb()` drains SB2. So **every `writel()`**, every doorbell of every
+driver, drained SB2 first. On mainline, `writel()` begins with
+`dma_wmb()` (`dmb oshst`), and nothing drains SB2. A TRB, a descriptor
+or an OWN bit can still be in the bridge when the device is told to
+fetch it.
+
+**The fix: do as Realtek did** (patch 0018,
+`kernel/mainline/rtd129x-sb2-sync.c`). `wmb()` and `writel()`'s barrier
+write 0x1234 to SB2's sync register when `rtd_sb2_sync_reg` is set, after
+a `dsb st`. An early initcall sets it on RTD129x only. Code that links
+alone (the nVHE hypervisor, the EFI stub and early PI code, all
+`__DISABLE_EXPORTS`, and the vDSO) is left out. `rtd_sb2_sync=off` on the
+command line, or `/sys/kernel/debug/rtd_sb2_sync`, turns it off. The
+explicit syncs in r8169soc and the eMMC driver stay, harmless.
+
+A/B on one boot, switched through debugfs, load without SD writes:
+
+| Global sync | MSD reads on the Pi | Pi resets | eth0 stalls |
+|---|---|---|---|
+| on | 30 x 1 GiB, 0 bad | 0 | 0 |
+| off | hung in the 4th pass (~3 min) | 2 | 0 |
+
+Then with the sync on, with SD writes and the image writable: 15 x 1 GiB
+read and 3 x 512 MiB written by the Pi (read back by it), all 0 bad;
+125 SD files of 256 MiB, all equal; eMMC equal every time; no Pi reset,
+no eth0 stall. Throughput was unchanged: USB reads at 25 MB/s as before,
+H.264 at 23 fps.
+
+That run found two problems that have nothing to do with SB2 (§22).
 
 ### The MAC address
 
@@ -2539,7 +2583,23 @@ now matches the interface (`Path=platform-98016000.ethernet`) and sets
 only `MACAddressPolicy=persistent`. The MAC now comes from the machine ID,
 the same over reboots (checked twice), and the name is still eth0.
 
-## 22. Sources
+## 22. Found under load, open (2026-10-04)
+
+**H.264 did not start once the SD card was busy.** The heavy run began
+with ustreamer starting its encoder while the SD writes started. coda
+asked the CMA area for 765 contiguous pages (a 3 MiB frame buffer). It got
+`-ENOMEM`, although 25369 of 32768 pages were free, one stretch of them
+24835 pages long: the pages there held page cache under I/O, which CMA
+could not move. ustreamer logged `Can't send INPUT-DMA buffer: Cannot
+allocate memory` and sent no H.264 for the rest of the session (an hour).
+MJPEG kept going.
+
+**Keyboard reports paused for 2-10 s, 58 times in an hour**, in the same
+run (SD writes + MSD traffic + everything else; load average about 12).
+Reports were late, not lost as far as the counts show. Runs without SD
+writes had no such pauses.
+
+## 23. Sources
 
 | Source | Used for |
 |--------|----------|
