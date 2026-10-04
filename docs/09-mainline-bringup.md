@@ -2450,7 +2450,96 @@ Not done:
   27 (`ConfigTVSystem`), with the monitor's EDID read over the
   transmitter's DDC.
 
-## 21. Sources
+## 21. eth0: SB2, a transmitter that stopped, and a MAC that changed (2026-10-04)
+
+### The stall
+
+During the release check, `eth0` stopped sending in the middle of a 3 GB
+transfer, while the image it carried was written to the eMMC. RX kept
+counting, TX did not, and nothing appeared in dmesg. The stack's TX
+watchdog never fired (`tx_timeout` 0): with 1024 descriptors and a link
+gone quiet, the queue never fills. `ip link set eth0 down/up` brought it
+back.
+
+### Reproducing it
+
+A TCP sink on the board took 4 GB rounds from the build host at about 105
+MB/s. At the same time the board wrote and deleted files on the eMMC's
+root and the SD root, and decompressed two to four `xz` streams arriving
+over SSH. Network traffic alone never stalled. With the disk load it did.
+
+The driver's state when it was stuck (a debugfs file added for the hunt):
+
+- `cur_tx` ahead of `dirty_tx` by 27-311 descriptors. The first pending
+  one had OWN set (`opts1 b0000042`, a 66-byte TCP ACK), so in the CPU's
+  view it had been handed over.
+- `TxPoll` read back `0x40`: the NPQ request still pending.
+- `IntrStatus` 0: no TX interrupt pending.
+- A second TxPoll did not move it. Neither did an SB2 sync followed by
+  TxPoll. The transmitter was wedged; only a reset brought it back.
+
+### The cause
+
+Realtek's kernel builds with `CONFIG_RTK_RBUS_BARRIER`. Its arm64
+`wmb()` is `dsb(st)` plus `rtk_bus_sync()`
+(`drivers/soc/realtek/common/rtk_barrier.c`), which writes SB2's sync
+register (0x9801a020). This is the posted-write problem the eMMC driver
+ran into (§14): SB2 holds CPU writes to DDR back until it is told to
+sync. Every Realtek driver gets that sync for free from `wmb()`. Mainline's
+`wmb()` is only the `dsb`, so `r8169soc` handed the MAC descriptors that
+might still be in SB2.
+
+(`r8169soc` runs the RTD129x without `RTL_TX_NO_CLOSE`: completion is the
+OWN bit, not the hardware's close index.)
+
+### The fix
+
+1. **`rtl_sb2_sync()`**, through the `realtek,sb2` syscon, at every point
+   where descriptors go to the MAC:
+   - before each `TxPoll`, in `start_xmit` and in the completion's extra
+     kick;
+   - after `rtl_rx()` gives descriptors back;
+   - before the ring addresses are written.
+2. **A descriptor watchdog** as a second line (`rtl_tx_watch()`). Once a
+   second it checks for TX descriptors pending with none completed. Three
+   seconds of that, with the link up, schedules the driver's own reset
+   (`rtl_reset_work`). That reset keeps the MAC address and does not go
+   through open/close.
+
+A/B on one kernel, with the sync switchable through debugfs and the same
+load each time:
+
+| Run | Sync | Load | Stalls |
+|---|---|---|---|
+| A1 | off | ~20 GB | 1, recovered by hand |
+| A2 | off | ~77 GB (16 x 4 GB + 4 x 3.2 GB over SSH) | 6, each reset by the watchdog within ~3 s; every transfer completed |
+| B | on | ~77 GB | 0 |
+| final kernel (debug code removed) | on | ~77 GB | 0 |
+
+### Other drivers
+
+The same applies to every driver that hands memory to a DMA master after
+a `wmb()`: dwc3 (the gadget: HID and MSD), xhci/ehci, coda (VE1), and this
+project's SD host (`sdmmc-rtd129x.c` does not sync). None has shown a
+problem. The SD image written from the eMMC system read back equal more
+than once, and MSD uploads compare equal. But none was tried under this
+kind of load. The eMMC driver and the audio CPU RPC already sync.
+
+### The MAC address
+
+The board has no MAC address of its own: u-boot leaves CONFIG_ETHADDR,
+00:10:20:30:40:50, on every board. The driver therefore takes a random one
+and marks it random, for udev's `MACAddressPolicy=persistent`. That never
+happened: Arch Linux ARM masks `99-default.link`
+(`/etc/systemd/network/99-default.link -> /dev/null`, to keep the name
+eth0), so no `.link` file matched and the MAC was new on every boot. The
+IP address did not move only because systemd-networkd's DHCP client ID
+comes from the machine ID. `overlay/etc/systemd/network/10-bpiw2-eth0.link`
+now matches the interface (`Path=platform-98016000.ethernet`) and sets
+only `MACAddressPolicy=persistent`. The MAC now comes from the machine ID,
+the same over reboots (checked twice), and the name is still eth0.
+
+## 22. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -2474,6 +2563,7 @@ Not done:
 | BPI-W2 wiki, "Hardware files" (Google Drive) | `dvrboot.exe.bin` and the hwsetting for the eMMC boot loader (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` | The eMMC controller's init, transfer and completion sequence (§14) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14); its HS200 pad drive (§19) |
+| `vendor/bpi-w2-bsp/linux-rtk/arch/arm64/include/asm/barrier.h`, `drivers/soc/realtek/common/rtk_barrier.c` | `wmb()` with an SB2 sync (`CONFIG_RTK_RBUS_BARRIER`) (§21) |
 | `kisgezenguz/linux-4.9` `drivers/video/fbdev/rtk/rtk_fb_RPC.c` | The order of the VO calls that put OSD1 on screen (§20) |
 | `Realtek-OpenSource/android_device_realtek` `proprietary/libs/rtk_libs/common/IPC` | `AudioRPC_System.h` (program 201, the video procedure numbers), `RPCstruct.h`, the argument structures (§20) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_dptx/`, `u-boot-rtk/drivers/logo_disp/logo_disp_dptx.c` | The DP transmitter: PLLs, timing, M/N, AUX, link training, the TV-system RPCs (§20) |

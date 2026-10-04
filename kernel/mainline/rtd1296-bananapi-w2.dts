@@ -593,6 +593,7 @@
 		resets = <&iso_reset RTD1295_ISO_RSTN_GMAC>,
 			 <&iso_reset RTD1295_ISO_RSTN_GPHY>;
 		reset-names = "gmac", "gphy";
+		realtek,sb2 = <&sb2>;	/* to sync descriptors out to DDR */
 		rtl-config = <1>;
 		mac-version = <42>;	/* RTL_GIGA_MAC_VER_42 */
 		output-mode = <0>;	/* embedded PHY */

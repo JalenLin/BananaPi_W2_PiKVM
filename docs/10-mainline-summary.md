@@ -47,8 +47,8 @@ after a press of the reset button with the system idle, which is the
 0.8 V hang above. The journal holds no record of it.
 
 The `6a5e4bd` eMMC image went onto the eMMC afterwards, from the SD
-system. The first try stopped at 1.25 GB when `eth0` stopped sending (see
-"Seen, not yet looked into" below). After `ip link set eth0 down/up` the
+system. The first try stopped at 1.25 GB when `eth0` stopped sending (found
+and fixed afterwards, `docs/09` §21). After `ip link set eth0 down/up` the
 second try went through and read back md5 equal. Only the dtb differs
 from `387db27`.
 
@@ -108,7 +108,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | SD card from the eMMC system | done | the driver powers the card, starts the controller and tunes the bus itself, so an SD card works as a data disk while the root is the eMMC's -- 4-bit 50 MHz, 29.7 MB/s; hot-plug too (the host polls) | §5 of this file |
 | Virtual media store | done | its own partition on the SD image (`BPI-MSD`, the rest of the card), as PiKVM does it; on the eMMC image a directory, or a card dedicated with `bpikvm-msd-sd`. kvmd uploads an ISO onto either through its API | §6 of this file |
 | eMMC (root) | done | own driver (DW MSHC + Realtek wrapper), HS200: 200 MHz 8-bit with the BSP's phase tuning, 113 MB/s read, 39 MB/s write; boots from the eMMC alone with the full PiKVM stack | §5 of this file, `09` §19 |
-| Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network | §9 |
+| Gigabit Ethernet | done | DHCP, ssh, kernels installed over the network. Descriptors synced through SB2 and a TX watchdog: no stall in ~77 GB of network + eMMC/SD load, where without the sync it stopped six times. MAC from the machine ID, the same over reboots | §9, `docs/09` §21 |
 | Reboot | done | watchdog restart handler | §9 |
 | USB host ports | done | hub and a card reader enumerate | §7 |
 | USB OTG (Type-C) | done | the target enumerates keyboard, mouse and mass storage | §7, §10 |
@@ -164,18 +164,6 @@ Not done:
   has `r8152` and `ax88179_178a`.
 
 Seen, not yet looked into:
-
-- **`eth0` stopped transmitting once, under load** (2026-10-04, streaming
-  an image in over SSH at ~40 MB/s while it was written to the eMMC). RX
-  went on counting, TX stayed at the same packet count, and the board
-  could not reach the gateway. There was nothing in dmesg, and the TX
-  watchdog never fired (`tx_timeout` 0): with 1024 descriptors and the
-  queue awake, almost nothing gets queued while ARP fails, so the ring
-  never fills. `ip link set eth0 down && ip link set eth0 up` brought it
-  back. The same transfer worked the next time, and on three other
-  multi-GB transfers that day. `r8169soc` tracks TX through the hardware's
-  close index (`RTL_TX_NO_CLOSE`), which stopped moving. A board that
-  hits this is off the network until someone bounces the link.
 
 - `r8169 98016000.ethernet eth0: rtl_csiar_cond == 0/1` lines from the
   Ethernet driver while the link comes up; the link works.

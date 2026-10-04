@@ -1,0 +1,14 @@
+# The on-board Ethernet (r8169soc) has no MAC address of its own: the BSP
+# u-boot leaves 00:10:20:30:40:50, the same on every board, so the driver
+# takes a random one each boot. MACAddressPolicy=persistent replaces that
+# with one derived from /etc/machine-id: unique per installed system, and
+# the same on every boot.
+#
+# This is what systemd's 99-default.link does, but Arch Linux ARM masks that
+# file (/etc/systemd/network/99-default.link -> /dev/null) to keep the name
+# eth0. No Name= or NamePolicy= here, so the name stays eth0.
+[Match]
+Path=platform-98016000.ethernet
+
+[Link]
+MACAddressPolicy=persistent

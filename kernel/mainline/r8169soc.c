@@ -42,6 +42,8 @@
 #include <linux/clk-provider.h>
 
 #include <linux/reset.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 
 /*
  * Carried from Fireblossom/wd-mch-kernel (Linux 6.18.40 on the RTD1295),
@@ -824,6 +826,10 @@ enum wol_flags {
 #define WOL_BUF_LEN		128
 
 struct rtl8169_private {
+	struct regmap *sb2;	/* the bus bridge; see rtl_sb2_sync() */
+	struct delayed_work tx_watch;	/* see rtl_tx_watch() */
+	unsigned int tx_watch_dirty;
+	unsigned int tx_watch_ticks;
 	void __iomem *mmio_addr;	/* memory map physical address */
 	void __iomem *mmio_clkaddr;
 	struct platform_device *pdev;
@@ -2920,6 +2926,24 @@ static void rtl_hw_start(struct net_device *dev)
 	rtl_irq_enable_all(tp);
 }
 
+/*
+ * SB2, the RTD129x bus bridge, holds CPU writes to DDR back until it is told
+ * to sync; a barrier alone does not get them out. Realtek's kernel hides this
+ * in wmb() (CONFIG_RTK_RBUS_BARRIER: every wmb() writes SB2's sync register).
+ * Mainline's wmb() does not, so descriptors handed to the MAC are synced here,
+ * before every TxPoll, after RX descriptors are given back and before the
+ * rings are handed over. Without it the transmitter stopped under heavy DMA
+ * load (network, eMMC and SD writes together), with nothing in the logs: 1
+ * and 6 times in two runs of about 20 and 77 GB; with it, none in 77 GB.
+ */
+#define SB2_SYNC	0x020
+
+static inline void rtl_sb2_sync(struct rtl8169_private *tp)
+{
+	if (tp->sb2)
+		regmap_write(tp->sb2, SB2_SYNC, 0);
+}
+
 static void rtl_set_rx_tx_desc_registers(struct rtl8169_private *tp,
 					 void __iomem *ioaddr)
 {
@@ -2927,6 +2951,7 @@ static void rtl_set_rx_tx_desc_registers(struct rtl8169_private *tp,
 	 * register to be written before TxDescAddrLow to work.
 	 * Switching from MMIO to I/O access fixes the issue as well.
 	 */
+	rtl_sb2_sync(tp);	/* the freshly initialised rings */
 	RTL_W32(TxDescStartAddrHigh, ((u64)tp->TxPhyAddr) >> 32);
 	RTL_W32(TxDescStartAddrLow, ((u64)tp->TxPhyAddr) & DMA_BIT_MASK(32));
 	RTL_W32(RxDescAddrHigh, ((u64)tp->RxPhyAddr) >> 32);
@@ -3804,6 +3829,7 @@ static netdev_tx_t rtl8169_start_xmit(struct sk_buff *skb,
 	#endif /* RTL_TX_NO_CLOSE */
 
 	wmb(); /* make sure this TX descriptor is ready */
+	rtl_sb2_sync(tp);
 
 	RTL_W8(TxPoll, NPQ);
 
@@ -3914,6 +3940,7 @@ static void rtl_tx(struct net_device *dev, struct rtl8169_private *tp)
 		if (tp->cur_tx != dirty_tx) {
 			void __iomem *ioaddr = tp->mmio_addr;
 
+			rtl_sb2_sync(tp);
 			RTL_W8(TxPoll, NPQ);
 		}
 	}
@@ -4023,6 +4050,8 @@ process_pkt:
 
 	count = cur_rx - tp->cur_rx;
 	tp->cur_rx = cur_rx;
+	/* the descriptors given back above, out to DDR for the MAC */
+	rtl_sb2_sync(tp);
 
 	delta = rtl8168_rx_fill(tp, dev, tp->dirty_rx, tp->cur_rx);
 	/* netif_err(tp, drv, tp->dev, "delta =%x\n",delta); */
@@ -4143,6 +4172,8 @@ release_descriptor:
 
 	count = cur_rx - tp->cur_rx;
 	tp->cur_rx = cur_rx;
+	/* the descriptors given back above, out to DDR for the MAC */
+	rtl_sb2_sync(tp);
 
 	return count;
 }
@@ -4373,6 +4404,37 @@ static int rtl8169_poll(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
+/*
+ * The transmitter has been seen to stop with descriptors handed to it:
+ * TxPoll's request left pending, nothing completed, nothing in the logs,
+ * and neither another TxPoll nor an SB2 sync bringing it back. The stack's
+ * watchdog only looks at a stopped queue, and with 1024 descriptors on a
+ * link that has gone quiet the queue never fills. So a second watchdog
+ * looks at the descriptors: work pending and none completed for three
+ * seconds, with the link up, resets the MAC as a TX timeout would.
+ */
+static void rtl_tx_watch(struct work_struct *work)
+{
+	struct rtl8169_private *tp = container_of(to_delayed_work(work),
+						  struct rtl8169_private, tx_watch);
+	unsigned int dirty = READ_ONCE(tp->dirty_tx);
+	unsigned int pending = READ_ONCE(tp->cur_tx) - dirty;
+
+	if (pending && dirty == tp->tx_watch_dirty &&
+	    netif_carrier_ok(tp->dev)) {
+		if (++tp->tx_watch_ticks >= 3) {
+			netdev_warn(tp->dev, "transmitter stalled, %u descriptors pending: resetting\n",
+				    pending);
+			tp->tx_watch_ticks = 0;
+			rtl_schedule_task(tp, RTL_FLAG_TASK_RESET_PENDING);
+		}
+	} else {
+		tp->tx_watch_ticks = 0;
+	}
+	tp->tx_watch_dirty = dirty;
+	schedule_delayed_work(&tp->tx_watch, HZ);
+}
+
 static void rtl8169_down(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
@@ -4400,6 +4462,8 @@ static int rtl8169_close(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	struct platform_device *pdev = tp->pdev;
+
+	cancel_delayed_work_sync(&tp->tx_watch);
 
 	/* Update counters before going down */
 	rtl8169_update_counters(dev);
@@ -4505,6 +4569,10 @@ static int rtl_open(struct net_device *dev)
 	netif_start_queue(dev);
 
 	rtl_unlock_work(tp);
+
+	tp->tx_watch_ticks = 0;
+	tp->tx_watch_dirty = tp->dirty_tx;
+	schedule_delayed_work(&tp->tx_watch, HZ);
 
 	tp->saved_wolopts = 0;
 
@@ -8548,6 +8616,12 @@ rtl_init_one(struct platform_device *pdev)
 	tp->mac_version = mac_version - 1;
 	tp->mmio_addr = ioaddr;
 	tp->mmio_clkaddr = clkaddr;
+	INIT_DELAYED_WORK(&tp->tx_watch, rtl_tx_watch);
+	tp->sb2 = syscon_regmap_lookup_by_phandle(pdev->dev.of_node, "realtek,sb2");
+	if (IS_ERR(tp->sb2)) {
+		dev_warn(&pdev->dev, "no realtek,sb2: descriptors are not synced\n");
+		tp->sb2 = NULL;
+	}
 	tp->led_cfg = led_config;
 	tp->output_mode = output_mode;
 	tp->ext_phy_id = ext_phy_id;
