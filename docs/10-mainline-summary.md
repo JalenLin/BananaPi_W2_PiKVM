@@ -17,6 +17,41 @@ All of the following was verified on the board (BPI-W2, 2 GiB, Kodi on a
 Raspberry Pi 3 as the HDMI source, a PC on the Type-C port) on 2026-10-01;
 the eMMC rows on 2026-10-02/03.
 
+**Release check, 2026-10-04, evening** (`kernel-6.18` @ `387db27`, then
+`6a5e4bd`): eMMC HS200, the HDMI output, the mini DP output, the ATX GPIO
+lines, and two fixes the check itself turned up.
+
+- **The images carried a shared private key.** It was pacman's master
+  signing key, from `pacman-key --init` at rootfs build time
+  (`/etc/pacman.d/gnupg/private-keys-v1.d`). The earlier checks looked only
+  for SSH and TLS keys by name. Now the image carries just the PiKVM
+  repository's public key, and `bpikvm-firstboot` builds each board's own
+  keyring, offline. After that, `pacman -Sy` verified its signatures on
+  both paths.
+- **The reset button hung the board** from an idle system: the PMIC keeps
+  the CPU rail at Linux's last voltage, and the boot ROM does not start on
+  0.8 V. The CPU rail now never goes below 1.0 V (`09` §16).
+
+Both images were inspected: no SSH host keys, TLS keys, pacman keyring,
+private key files or `authorized_keys`. The dtb in them is byte for byte
+the one the reset test ran on.
+
+| Path | Verified by |
+|---|---|
+| eMMC alone (SW4 = 0, no card), `387db27` | own keys and keyring made on the first boot; root on `mmcblk1p2` grown to 6.8 GiB; eMMC at HS200 (TX 18, RX 21); 1080p60 capture of the board's own HDMI output through a cable to its HDMI IN (the login console); HID online; 16 MiB ISO uploaded through kvmd, md5 equal; governor `performance` while a client streams and back after; `arecord` on `hw:hdmirx`; the mini DP output on a VGA monitor through an ATEN VC920 |
+| SD card, the eMMC's u-boot (SW4 = 0, card in), `387db27` | the image written from the eMMC system, read back, md5 equal; first boot grew the ISO partition to 232 GiB; root on `mmcblk0p2`; SD 50 MHz 4-bit, eMMC HS200; the same checks as above (ISO onto `BPI-MSD`); DP on the VGA monitor |
+| Reset button, SD system | 0.8 V: hang; 1.0125 V: boots; `6a5e4bd` (1.0 V floor), idle at 300 MHz: boots |
+
+The first power-on of the freshly written card did not boot. It came
+after a press of the reset button with the system idle, which is the
+0.8 V hang above. The journal holds no record of it.
+
+The `6a5e4bd` eMMC image went onto the eMMC afterwards, from the SD
+system. The first try stopped at 1.25 GB when `eth0` stopped sending (see
+"Seen, not yet looked into" below). After `ip link set eth0 down/up` the
+second try went through and read back md5 equal. Only the dtb differs
+from `387db27`.
+
 **Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
 kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
 work): both images rebuilt from a clean tree and inspected (kernel and
@@ -129,6 +164,18 @@ Not done:
   has `r8152` and `ax88179_178a`.
 
 Seen, not yet looked into:
+
+- **`eth0` stopped transmitting once, under load** (2026-10-04, streaming
+  an image in over SSH at ~40 MB/s while it was written to the eMMC). RX
+  went on counting, TX stayed at the same packet count, and the board
+  could not reach the gateway. There was nothing in dmesg, and the TX
+  watchdog never fired (`tx_timeout` 0): with 1024 descriptors and the
+  queue awake, almost nothing gets queued while ARP fails, so the ring
+  never fills. `ip link set eth0 down && ip link set eth0 up` brought it
+  back. The same transfer worked the next time, and on three other
+  multi-GB transfers that day. `r8169soc` tracks TX through the hardware's
+  close index (`RTL_TX_NO_CLOSE`), which stopped moving. A board that
+  hits this is off the network until someone bounces the link.
 
 - `r8169 98016000.ethernet eth0: rtl_csiar_cond == 0/1` lines from the
   Ethernet driver while the link comes up; the link works.
