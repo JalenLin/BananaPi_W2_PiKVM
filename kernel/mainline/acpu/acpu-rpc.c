@@ -61,6 +61,8 @@
 #define IPC_VO_INT_SYNC		(IPC + 0x40)
 #define SYNC_RPC_NOTIFY		cpu_to_be32(BIT(8))	/* RPC interrupts on */
 #define SYNC_RPC_FEEDBACK	cpu_to_be32(BIT(9))	/* this one is RPC */
+#define SYNC_VO_NOTIFY		cpu_to_be32(BIT(16))	/* VO interrupts on */
+#define SYNC_VO_FEEDBACK	cpu_to_be32(BIT(17))	/* this one is VO */
 
 /* Offsets in the ring area */
 #define RING_SIZE		512
@@ -92,6 +94,8 @@ struct rpc_hdr {
 
 #define PROG_KERNEL		98	/* kernel call; also R_PROGRAM */
 #define PROG_REPLY		99
+#define PROG_AUDIO_SYSTEM	201	/* the firmware's own program, version 0 */
+#define RPC_MAX_WORDS		16
 
 /* R_PROGRAM procedures: the firmware's requests for memory */
 #define REMOTE_ALLOC		1
@@ -144,7 +148,14 @@ struct rtd_acpu {
 	u32 call_task;
 	u32 call_ret;
 
+	struct mutex rpc_lock;		/* AUDIO_SYSTEM calls, one at a time */
+	struct completion rpc_done;
+	u32 rpc_context;
+	__be32 rpc_res[RPC_MAX_WORDS];
+	u32 rpc_nres;
+
 	struct rtd_acpu_adev *pcm;
+	struct rtd_acpu_adev *vo;
 };
 
 static void __iomem *ring_ptr(struct rtd_acpu *acpu, u32 addr)
@@ -349,6 +360,31 @@ static void acpu_skip(struct rtd_acpu *acpu, u32 rec, u32 len)
 	}
 }
 
+/*
+ * A reply to one of our AUDIO_SYSTEM calls: the caller's task ID, then the
+ * result in XDR, i.e. big-endian words.
+ */
+static void acpu_rpc_reply(struct rtd_acpu *acpu, struct rpc_hdr *hdr, u32 size)
+{
+	__be32 buf[RPC_MAX_WORDS + 1];
+	u32 n = min_t(u32, ALIGN(size, 4), sizeof(buf));
+
+	if (ring_read(acpu, INTR_REC(1), buf, n))
+		return;
+	acpu_skip(acpu, INTR_REC(1), ALIGN(size, 4) - n);
+	if (!acpu->rpc_context ||
+	    be32_to_cpu(hdr->context) != acpu->rpc_context) {
+		dev_warn(acpu->dev, "stray reply, context %#x\n",
+			 be32_to_cpu(hdr->context));
+		return;
+	}
+	dev_dbg(acpu->dev, "reply, %u bytes: %*ph\n", size, n, buf);
+	acpu->rpc_nres = n >= 4 ? n / 4 - 1 : 0;
+	memcpy(acpu->rpc_res, buf + 1, acpu->rpc_nres * 4);
+	acpu->rpc_context = 0;
+	complete(&acpu->rpc_done);
+}
+
 /* The firmware's own requests, on the intr AS ring */
 static void acpu_do_intr(struct rtd_acpu *acpu)
 {
@@ -359,6 +395,10 @@ static void acpu_do_intr(struct rtd_acpu *acpu)
 	while (!ring_read(acpu, INTR_REC(1), &hdr, sizeof(hdr))) {
 		u32 size = be32_to_cpu(hdr.param_size);
 
+		if (be32_to_cpu(hdr.program) == PROG_REPLY) {
+			acpu_rpc_reply(acpu, &hdr, size);
+			continue;
+		}
 		if (be32_to_cpu(hdr.program) != PROG_KERNEL ||
 		    size < sizeof(arg)) {
 			dev_dbg(acpu->dev, "dropped program %u procedure %u\n",
@@ -490,6 +530,98 @@ int rtd_acpu_call(struct rtd_acpu *acpu, u32 cmd, u32 param, u32 result,
 }
 EXPORT_SYMBOL_GPL(rtd_acpu_call);
 
+/**
+ * rtd_acpu_vo_kick() - tell the video output there is a new command in its
+ * ring, as the BSP's dc2vo_send_interrupt()
+ * @acpu: the audio CPU
+ */
+void rtd_acpu_vo_kick(struct rtd_acpu *acpu)
+{
+	unsigned long flags;
+	u32 sync;
+
+	spin_lock_irqsave(&acpu->sa_lock, flags);
+	sync = readl(acpu->comm + IPC_VO_INT_SYNC);
+	if (sync & SYNC_VO_NOTIFY) {
+		writel(sync | SYNC_VO_FEEDBACK, acpu->comm + IPC_VO_INT_SYNC);
+		writel(RPC_INT_SA | RPC_INT_W1, acpu->sb2 + RPC_INT);
+	}
+	spin_unlock_irqrestore(&acpu->sa_lock, flags);
+}
+EXPORT_SYMBOL_GPL(rtd_acpu_vo_kick);
+
+/**
+ * rtd_acpu_rpc() - call one of the firmware's AUDIO_SYSTEM procedures
+ * @acpu: the audio CPU
+ * @procedure: the procedure number (AudioRPC_System.h in Realtek's SDK)
+ * @args: the arguments, XDR-encoded: one big-endian word per member
+ * @nargs: number of words in @args
+ * @res: where the result goes, XDR-encoded as well
+ * @nres: number of words @res has room for
+ *
+ * These go over the intr rings, as Realtek's user-space RPC library sends
+ * them; the video output procedures are among them on this SoC.
+ *
+ * Return: the number of result words received, or a negative error.
+ */
+int rtd_acpu_rpc(struct rtd_acpu *acpu, u32 procedure, const __be32 *args,
+		 u32 nargs, __be32 *res, u32 nres)
+{
+	static u32 context;
+	struct {
+		struct rpc_hdr hdr;
+		__be32 arg[RPC_MAX_WORDS];
+	} msg = {
+		.hdr.program = cpu_to_be32(PROG_AUDIO_SYSTEM),
+		.hdr.procedure = cpu_to_be32(procedure),
+		.hdr.param_size = cpu_to_be32(nargs * 4),
+	};
+	int err;
+
+	if (nargs > RPC_MAX_WORDS)
+		return -EINVAL;
+	memcpy(msg.arg, args, nargs * 4);
+
+	mutex_lock(&acpu->rpc_lock);
+	msg.hdr.task = cpu_to_be32(task_pid_nr(current));
+	msg.hdr.sys_tid = msg.hdr.task;
+	/* never 0, which means "no call in flight" */
+	context = (context + 1) & 0x7fffffff ?: 1;
+	msg.hdr.context = cpu_to_be32(context);
+	reinit_completion(&acpu->rpc_done);
+	WRITE_ONCE(acpu->rpc_context, context);
+	err = acpu_send(acpu, INTR_REC(0), &msg, sizeof(msg.hdr) + nargs * 4);
+	if (!err && !wait_for_completion_timeout(&acpu->rpc_done,
+						 CALL_TIMEOUT))
+		err = -ETIMEDOUT;
+	WRITE_ONCE(acpu->rpc_context, 0);
+	if (!err) {
+		err = min(acpu->rpc_nres, nres);
+		memcpy(res, acpu->rpc_res, err * 4);
+	}
+	mutex_unlock(&acpu->rpc_lock);
+	if (err < 0)
+		dev_err(acpu->dev, "procedure %u failed: %d\n", procedure, err);
+	return err;
+}
+EXPORT_SYMBOL_GPL(rtd_acpu_rpc);
+
+/*
+ * Memory out of the region the firmware gets its own buffers from, which
+ * it can reach (below 512 MiB). Physical; the caller maps it.
+ */
+phys_addr_t rtd_acpu_media_alloc(struct rtd_acpu *acpu, size_t size)
+{
+	return gen_pool_alloc(acpu->media, PAGE_ALIGN(size));
+}
+EXPORT_SYMBOL_GPL(rtd_acpu_media_alloc);
+
+void rtd_acpu_media_free(struct rtd_acpu *acpu, phys_addr_t phys, size_t size)
+{
+	gen_pool_free(acpu->media, phys, PAGE_ALIGN(size));
+}
+EXPORT_SYMBOL_GPL(rtd_acpu_media_free);
+
 int rtd_acpu_alloc(struct rtd_acpu *acpu, size_t size, struct rtd_acpu_buf *buf)
 {
 	dma_addr_t phys;
@@ -544,7 +676,7 @@ static void acpu_start(struct rtd_acpu *acpu)
 	writel(0xffffffff, acpu->comm + IPC_AUDIO_RPC_FLAG);
 }
 
-static void acpu_unregister_pcm(void *data)
+static void acpu_unregister_adev(void *data)
 {
 	struct rtd_acpu_adev *adev = data;
 
@@ -552,12 +684,13 @@ static void acpu_unregister_pcm(void *data)
 	auxiliary_device_uninit(&adev->adev);
 }
 
-static void acpu_release_pcm(struct device *dev)
+static void acpu_release_adev(struct device *dev)
 {
 	kfree(container_of(dev, struct rtd_acpu_adev, adev.dev));
 }
 
-static int acpu_add_pcm(struct rtd_acpu *acpu)
+static int acpu_add_adev(struct rtd_acpu *acpu, const char *name,
+			 struct rtd_acpu_adev **slot)
 {
 	struct rtd_acpu_adev *adev;
 	int ret;
@@ -566,9 +699,9 @@ static int acpu_add_pcm(struct rtd_acpu *acpu)
 	if (!adev)
 		return -ENOMEM;
 	adev->acpu = acpu;
-	adev->adev.name = RTD_ACPU_PCM_NAME;
+	adev->adev.name = name;
 	adev->adev.dev.parent = acpu->dev;
-	adev->adev.dev.release = acpu_release_pcm;
+	adev->adev.dev.release = acpu_release_adev;
 	ret = auxiliary_device_init(&adev->adev);
 	if (ret) {
 		kfree(adev);
@@ -579,8 +712,8 @@ static int acpu_add_pcm(struct rtd_acpu *acpu)
 		auxiliary_device_uninit(&adev->adev);
 		return ret;
 	}
-	acpu->pcm = adev;
-	return devm_add_action_or_reset(acpu->dev, acpu_unregister_pcm, adev);
+	*slot = adev;
+	return devm_add_action_or_reset(acpu->dev, acpu_unregister_adev, adev);
 }
 
 static int acpu_probe(struct platform_device *pdev)
@@ -600,6 +733,8 @@ static int acpu_probe(struct platform_device *pdev)
 	INIT_WORK(&acpu->work, acpu_work);
 	mutex_init(&acpu->call_lock);
 	init_completion(&acpu->call_done);
+	mutex_init(&acpu->rpc_lock);
+	init_completion(&acpu->rpc_done);
 
 	/* SB2 belongs to a syscon as a whole, so do not claim the range */
 	acpu->sb2 = devm_ioremap(dev, platform_get_resource(pdev,
@@ -662,7 +797,8 @@ static int acpu_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, acpu);
-	return acpu_add_pcm(acpu);
+	return acpu_add_adev(acpu, RTD_ACPU_PCM_NAME, &acpu->pcm) ?:
+	       acpu_add_adev(acpu, RTD_ACPU_VO_NAME, &acpu->vo);
 }
 
 static const struct of_device_id acpu_of_match[] = {

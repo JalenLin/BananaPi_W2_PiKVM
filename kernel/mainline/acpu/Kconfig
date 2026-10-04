@@ -17,3 +17,15 @@ config SND_RTD129X_HDMIRX
 	help
 	  The audio of the RTD1295/RTD1296 HDMI input, captured by the audio
 	  firmware, as an ALSA capture device.
+
+config RTD129X_VO
+	tristate "Realtek RTD129x video output"
+	depends on RTD129X_ACPU && DRM && OF_RESERVED_MEM
+	select DRM_CLIENT_SELECTION
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	help
+	  The RTD1295/RTD1296 video output (HDMI out), which the audio
+	  firmware runs, as a DRM device with one plane, at the mode the
+	  boot loader set (1080p60 on the BPI-W2). Gives a console on HDMI
+	  through DRM's fbdev emulation.

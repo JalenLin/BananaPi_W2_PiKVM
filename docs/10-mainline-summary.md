@@ -88,6 +88,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz at the BSP's voltages, the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
+| HDMI output (the board's own) | done | own DRM driver on the audio firmware's video output: one plane at 1080p60 (the mode the boot loader sets), fbdev emulation, so `tty1` with a login prompt is on HDMI. Checked by cabling HDMI OUT to the board's own HDMI IN and capturing it: colour bars, the console, and a KMS client's SETCRTC and page flip (with its flip event) | `docs/09` §20 |
 | ATX lines (GPIO) | prepared, not tried | the MISC GPIO controller (mainline `gpio-rtd`) as `/dev/kvmd-gpio`; four header pins chosen and checked (GPIO function, inputs, pull-ups, edge detection can be requested); kvmd accepts the config. ATX stays off: no ATX board was connected | §7 of this file |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
 
@@ -97,8 +98,11 @@ Not done:
   boot loader flashed (`romflash.py`) and its u-boot environment set
   (`uboot-env.txt` through `ubstop.py`) over the serial console once,
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
-- **The board's own HDMI output**: no driver; the console is the serial port
-  and the network. PiKVM itself does not need it.
+- **The mini DisplayPort output**: nothing drives it. The firmware's video
+  output feeds it too, but the DP transmitter needs its own setup and link
+  training (the BSP's `rtk_dptx`).
+- **Other HDMI output modes**: the output runs at the mode the boot loader
+  set (1080p60); the driver does not change it or read the monitor's EDID.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not possible
   next to the keyboard, mouse and virtual media. Both are USB gadget
   functions on the Type-C port, and its dwc3 has six endpoints of which
@@ -211,7 +215,7 @@ cannot be unloaded.
 | `bpiw2.config` | The config fragment on top of arm64 defconfig |
 | `irq-rtd129x.c`, `sdmmc-rtd129x.c`, `r8169soc.c`, `clk-rtd129x-crt.c`, `emmc-rtd129x.c`, `rtd129x-thermal.c`, `clk-rtd129x-scpu.c`, `g2227-regulator.c` | Drivers behind patches 0003, 0007, 0008, 0010, 0014, 0015, 0016, 0017 |
 | `hdmirx/` | The HDMI receiver: Realtek's BSP driver with a new V4L2 side |
-| `acpu/` | `rtd129x-acpu` (RPC to the audio CPU firmware) and `snd-rtd129x-hdmirx` (ALSA capture) |
+| `acpu/` | `rtd129x-acpu` (RPC to the audio CPU firmware), `snd-rtd129x-hdmirx` (ALSA capture) and `rtd129x-vo` (the HDMI output, DRM) |
 | `diag/` | A diagnostic initramfs used during bring-up |
 
 ### Userspace

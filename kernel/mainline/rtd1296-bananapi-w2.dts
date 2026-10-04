@@ -99,7 +99,13 @@
 			no-map;
 		};
 
+		/*
+		 * Not handed to the firmware, so it is the video output's:
+		 * scanout buffers for the HDMI out (rtd129x-vo), which the
+		 * audio CPU reads and so must be below 512 MiB.
+		 */
 		ion_media2: media-heap@11000000 {
+			compatible = "shared-dma-pool";
 			reg = <0x11000000 0x09200000>;
 			no-map;
 		};
@@ -580,9 +586,10 @@
 		reg = <0x1a104 0xc>;
 		interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
 		memory-region = <&rpc_comm>, <&rpc_ringbuf>,
-				<&acpu_audio_heap>, <&ion_media1>, <&acpu_fw>;
+				<&acpu_audio_heap>, <&ion_media1>, <&acpu_fw>,
+				<&ion_media2>;
 		memory-region-names = "comm", "ring", "audio", "media",
-				      "firmware";
+				      "firmware", "vo";
 	};
 
 	/*

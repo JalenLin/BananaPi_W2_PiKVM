@@ -184,8 +184,17 @@ Two things worth knowing before they surprise anyone:
   and then the eMMC. So the commands of §3 (`bootemmc` and the rest) exist
   only on the SW4 = 0 path; at the SW4 = 1 prompt they are "not defined".
 
-## 7. What is not there
+## 7. The board's own HDMI output
 
-ATX power control, the board's own HDMI output, the second Ethernet port,
-and audio towards the controlled machine. The full list, with what each
-would need, is in §1 of `10-mainline-summary.md`.
+The HDMI port next to the HDMI input shows a Linux console (`tty1`, with a
+login prompt) at 1080p60, the mode the boot loader sets. A USB keyboard on
+the board's USB ports types into it. It is a DRM device
+(`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as well. The
+mini DisplayPort output does nothing.
+
+## 8. What is not there
+
+ATX power control is prepared but off (`10-mainline-summary.md` §7). Not
+there: the mini DisplayPort output, the second Ethernet port, and audio
+towards the controlled machine. The full list, with what each would need,
+is in §1 of `10-mainline-summary.md`.

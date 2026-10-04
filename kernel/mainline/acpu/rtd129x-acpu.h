@@ -48,6 +48,11 @@ enum {
 
 int rtd_acpu_call(struct rtd_acpu *acpu, u32 cmd, u32 param, u32 result,
 		  u32 *ret);
+int rtd_acpu_rpc(struct rtd_acpu *acpu, u32 procedure, const __be32 *args,
+		 u32 nargs, __be32 *res, u32 nres);
+void rtd_acpu_vo_kick(struct rtd_acpu *acpu);
+phys_addr_t rtd_acpu_media_alloc(struct rtd_acpu *acpu, size_t size);
+void rtd_acpu_media_free(struct rtd_acpu *acpu, phys_addr_t phys, size_t size);
 int rtd_acpu_alloc(struct rtd_acpu *acpu, size_t size, struct rtd_acpu_buf *buf);
 void rtd_acpu_free(struct rtd_acpu *acpu, struct rtd_acpu_buf *buf);
 
@@ -58,5 +63,6 @@ struct rtd_acpu_adev {
 };
 
 #define RTD_ACPU_PCM_NAME	"pcm"
+#define RTD_ACPU_VO_NAME	"vo"	/* the video output */
 
 #endif

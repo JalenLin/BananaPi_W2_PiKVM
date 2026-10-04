@@ -179,6 +179,7 @@ Milestones are the ones defined in §6 of `08-kernel-uplift.md`.
 | **eMMC** | a boot loader on the eMMC, an eMMC host driver, an image and installer | **done** 2026-10-02: the system boots and runs from the eMMC alone (HS 52 MHz, 8 bits, 38/27 MB/s); 2026-10-03: capture and audio after the eMMC's u-boot -- see §14; 2026-10-04: HS200, 200 MHz, 113/39 MB/s -- see §19 |
 | **Thermal** | the CPU temperature sensor | **done** 2026-10-03: `thermal_zone0`, shown by kvmd -- see §15 |
 | **cpufreq** | the CPU clock, the PMIC, OPPs, cooling | **done** 2026-10-03: 300 MHz - 1.4 GHz with the BSP's voltages, the L2 rail following -- see §16 |
+| **HDMI out** | the firmware's video output: RPC calls, a plane, a DRM driver | **done** 2026-10-04: `tty1` on the board's HDMI output at 1080p60, KMS page flips -- see §20 |
 
 ### Traps carried over from §3 of `08-kernel-uplift.md`
 
@@ -2250,7 +2251,119 @@ Pad drive is left as the boot loader sets it: 0xbb for clock, command and
 data (`PDRIVE_NF1..3`), which is u-boot's HS200 setting
 (`pad_driving(0xbb, 0xbb, 0xbb, 0x33)`).
 
-## 20. Sources
+## 20. HDMI output (2026-10-04)
+
+The board's own HDMI output had no driver: the console was the serial port.
+On this SoC the audio CPU's firmware (`bluecore.audio`) also runs the
+video output -- the VO mixer, its planes and the HDMI transmitter behind
+them -- so the job is to ask the firmware, not to drive registers.
+
+### What was already there
+
+- **The firmware already outputs 1080p60.** u-boot writes a TV system
+  (`VO_RESOLUTION`, 0x1f800, magic 0xC0DE0BEE: standard 25 = 1080p60,
+  HDMI on) for the firmware. The firmware applies it when it starts
+  (`[VO_SetVideoStandard]st 25`, `is_hdmi_plugin 1` in its boot output),
+  so the transmitter sends 1080p60 of background colour. No plane shows
+  anything.
+- **The logo path does not help.** u-boot can hand the firmware a logo
+  through `boot_av` (`pov_boot_av_info`), but in our boot that pointer is
+  0, and the firmware reads it only when it starts.
+
+### How Realtek puts a plane on screen
+
+Realtek's own 4.9 kernel for this SoC (`kisgezenguz/linux-4.9`,
+`drivers/video/fbdev/rtk/rtk_fb_RPC.c`) does it from the kernel, in this
+order:
+
+1. `Create` (video-out filter)
+2. `Display` (plane OSD1)
+3. `ConfigureDisplayWindow`
+4. `SetRefClock`
+5. `Run`
+6. `InitRingBuffer`
+7. `Display` again (zeroBuffer)
+
+After that, each picture goes into the ring as an in-band
+`VIDEO_GRAPHIC_PICTURE_OBJECT`, the way `dc2vo.c` does it. Two things had
+to change for this firmware.
+
+- **Its kernel-RPC numbers do not exist here.** That kernel makes the calls
+  as kernel RPCs 41-47 (`ENUM_VIDEO_KERNEL_RPC_CREATE` and on). This
+  firmware's kernel-RPC handler (0x8f9c5ae0, registered at 0x8f919508) has
+  a jump table that stops at 39 (`sltiu v0,s2,40`). It does have 27 and 28
+  (`ConfigTVSystem`, `ConfigHDMI_InfoFrame`), but nothing to create a
+  plane.
+- **So the calls go as the firmware's own RPC program,** `AUDIO_SYSTEM`
+  (201, version 0), on the intr rings, the way Realtek's user-space library
+  sends them. The procedure numbers are from `AudioRPC_System.h` in
+  Realtek's Android SDK (`Realtek-OpenSource/android_device_realtek`):
+
+  | Procedure | Number |
+  |---|---|
+  | `Create` | 1010 |
+  | `InitRingBuffer` | 1030 |
+  | `Run` | 1040 |
+  | `SetRefClock` | 1090 |
+  | `ConfigureDisplayWindow` | 2080 |
+  | `VO_FILTER Display` | 2260 |
+
+  `Display` (2260) and `Run` (1040) were checked against the firmware's
+  dispatcher (0x8f9da248, 0x8f9d8838). TCL's open RTD2841 SDK has
+  different numbers (`Display` 3260): that is another chip's firmware.
+  A reply comes back as program 99 with the caller's task ID, then the
+  result.
+
+### The argument encoding
+
+The SDK calls the argument packing "XDR", but **it is the raw C structure,
+big-endian, as the MIPS side lays it out**. A short is 2 bytes and a char
+is 1 byte, not widened to 4 as in real XDR. Sent as four words, the window
+came out as `win x 0,y 0, w 0, h 0`, which shows on the UART with
+`options rtd129x_acpu fw_debug=1`. Sent as the structure, it came out as
+`w 1920, h 1080`, and the plane appeared.
+
+### The driver
+
+`kernel/mainline/acpu/acpu-vo.c` is `rtd129x-vo`, an auxiliary device of
+`rtd129x-acpu`, which gained `rtd_acpu_rpc()` for `AUDIO_SYSTEM` calls and
+a helper to kick the VO ring (`vo_int_sync` bits 16/17, then `RPC_INT_SA`,
+as the BSP's `dc2vo_send_interrupt()`).
+
+- It is a DRM simple display pipe: one CRTC, one plane, one HDMI
+  connector, and the one mode the firmware runs.
+- It takes XRGB8888 framebuffers from the GEM DMA helpers and has fbdev
+  emulation, so fbcon comes up on it.
+- Each new framebuffer goes to the firmware as a picture object, and the
+  plane keeps scanning it out from memory.
+- The firmware reads the buffers itself, so they must be below 512 MiB:
+  `ion_media2` (0x11000000, 146 MiB, which nothing hands the firmware)
+  became a `shared-dma-pool`, the `vo` region of the audio CPU node.
+- fbcon leaves the alpha byte 0. The plane therefore gets a constant alpha
+  of 0xff instead of using the pixel's.
+
+### Verified
+
+The test needs no monitor: an HDMI cable from the board's HDMI OUT to its
+own HDMI IN, with kvmd's snapshot as the camera.
+
+- Colour bars from the first version, right colours in the right order.
+- `tty1` with its login prompt, 1920x1080, from boot.
+- A KMS client (raw ioctls: dumb buffers, `SETCRTC`, `PAGE_FLIP`): red,
+  then blue after the flip, with the flip-complete event delivered. The
+  console came back when the client exited.
+- HDMI-in audio capture still works alongside it (`arecord` on
+  `hw:hdmirx`).
+
+Not done:
+
+- The mode stays what u-boot set. Changing it would go through kernel RPC
+  27 (`ConfigTVSystem`), with the monitor's EDID read over the
+  transmitter's DDC.
+- The mini DisplayPort output needs the DP transmitter set up and trained
+  (the BSP's `rtk_dptx`).
+
+## 21. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -2274,6 +2387,10 @@ data (`PDRIVE_NF1..3`), which is u-boot's HS200 setting
 | BPI-W2 wiki, "Hardware files" (Google Drive) | `dvrboot.exe.bin` and the hwsetting for the eMMC boot loader (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` | The eMMC controller's init, transfer and completion sequence (§14) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/drivers/mmc/rtkemmc.c` | u-boot's eMMC transfers: DBADDR only, wait for `DMA_DONE` (§14); its HS200 pad drive (§19) |
+| `kisgezenguz/linux-4.9` `drivers/video/fbdev/rtk/rtk_fb_RPC.c` | The order of the VO calls that put OSD1 on screen (§20) |
+| `Realtek-OpenSource/android_device_realtek` `proprietary/libs/rtk_libs/common/IPC` | `AudioRPC_System.h` (program 201, the video procedure numbers), `RPCstruct.h`, the argument structures (§20) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/video/fbdev/rtk/dc2vo/` | The ring header, the picture object, `ICQ_WriteCmd()`, the VO kick (§20) |
+| `vendor/bpi-w2-bsp/u-boot-rtk/drivers/logo_disp/`, `common/cmd_boot.c` | `VO_RESOLUTION` and `boot_av`, how u-boot sets the firmware's TV system (§20) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` `phase()`, `rtkemmc_phase_tuning()`, `search_best()` | The PLL phases, how they change, the three tuning scans; the 512-byte DMA minimum (§19) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/common/cmd_boot.c`, `arch/arm/include/asm/arch-rtd1295/fw_info.h` | `do_go_audio_fw()`, the firmware table format (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/crt_reg.h`, `rtk_dptx/dptx_hwapi.c` | `PLL_HDMI`, `PLL_VODMA` fields; how the DP driver prepares the HDMI PLL (§14) |
