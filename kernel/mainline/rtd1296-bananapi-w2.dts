@@ -144,6 +144,14 @@
 	 * The BSP's table (rtd-129x-cpu-dvfs.dtsi): the CPU rail is the
 	 * G2227's DCDC2 (cpu-supply), and g2227-regulator.c moves the L2 rail
 	 * with it.
+	 *
+	 * Except that nothing goes below 1.0 V, the G2227's power-on level.
+	 * The reset button (RESET# to the PMIC's PWRGD) and the watchdog reset
+	 * the SoC but leave the PMIC's outputs where Linux put them, and the
+	 * boot ROM does not start at the BSP's 0.8 V: a reset from an idle
+	 * system hung the board without a single character on the console
+	 * (2026-10-04), while from 1.0125 V it booted. So up to 1.1 GHz only
+	 * the clock scales; the BSP's 800-962.5 mV are not used.
 	 */
 	cpu_opp: opp-table-cpu {
 		compatible = "operating-points-v2";
@@ -151,47 +159,47 @@
 
 		opp-300000000 {
 			opp-hz = /bits/ 64 <300000000>;
-			opp-microvolt = <800000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-400000000 {
 			opp-hz = /bits/ 64 <400000000>;
-			opp-microvolt = <800000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-500000000 {
 			opp-hz = /bits/ 64 <500000000>;
-			opp-microvolt = <800000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-600000000 {
 			opp-hz = /bits/ 64 <600000000>;
-			opp-microvolt = <825000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-700000000 {
 			opp-hz = /bits/ 64 <700000000>;
-			opp-microvolt = <850000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-800000000 {
 			opp-hz = /bits/ 64 <800000000>;
-			opp-microvolt = <875000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-900000000 {
 			opp-hz = /bits/ 64 <900000000>;
-			opp-microvolt = <900000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
-			opp-microvolt = <925000>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-1100000000 {
 			opp-hz = /bits/ 64 <1100000000>;
-			opp-microvolt = <962500>;
+			opp-microvolt = <1000000>;
 			clock-latency-ns = <150000>;
 		};
 		opp-1200000000 {
@@ -381,7 +389,8 @@
 				};
 				cpu_supply: dcdc2 {
 					regulator-name = "vdd-cpu";
-					regulator-min-microvolt = <800000>;
+					/* never below the power-on level: see cpu_opp */
+					regulator-min-microvolt = <1000000>;
 					regulator-max-microvolt = <1100000>;
 					regulator-always-on;
 					regulator-boot-on;

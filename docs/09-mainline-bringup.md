@@ -2104,6 +2104,38 @@ Verified:
   all-core load runs at about 1.25 GHz; bursts at 1.4 GHz.
 - Capture, the kvmd snapshot, HID, HDMI audio and every unit as before.
 
+### Nothing below 1.0 V: a reset keeps the PMIC's voltage (2026-10-04)
+
+During the release check of `387db27`, the board did not come back from
+its reset button: nothing on the console, no network. A power cycle
+brought it up. It turned out to be the DVFS above.
+
+- The reset button pulls `RESET#`, which goes to the G2227's PWRGD input
+  (schematic page 5, RP17). The PMIC then resets the SoC through its
+  `/RESET` output (`RST_OUT#`). But **its outputs stay where Linux set
+  them.** The watchdog reset (`WD_RST#`) does the same.
+- Idle, schedutil had the CPUs at 300 MHz on 0.8 V. The boot ROM does not
+  start on that.
+
+Reproduced with the SD system on the reset button:
+
+| CPU rail when the button was pressed | Result |
+|---|---|
+| 0.8 V (300 MHz pinned) | hang, not one character on the console |
+| 1.0125 V (1.2 GHz pinned) | boot ROM output at once, booted |
+| 1.0 V (300 MHz pinned, after the fix) | booted |
+
+So the OPPs up to 1.1 GHz are now all at 1.0 V, the G2227's power-on
+level, which every cold boot uses. Only the clock scales there; 1.2-1.4
+GHz still go up to 1.1 V. `vdd-cpu`'s `regulator-min-microvolt` is 1.0 V as
+well. The threshold between 0.8 and 1.0 V was not searched for: one board
+at one temperature would not give a margin to rely on, and the reset and
+watchdog paths are what a remote KVM cannot afford to lose. The cost: idle
+at about 66.5 C instead of about 64 C.
+
+The BSP runs the same table down to 0.8 V, so its boards should have the
+same problem with the reset button. It was not tested.
+
 ## 17. CMA: 32 MiB was not enough
 
 Every boot logged, twice,
