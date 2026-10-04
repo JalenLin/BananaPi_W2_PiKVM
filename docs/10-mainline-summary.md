@@ -17,6 +17,31 @@ All of the following was verified on the board (BPI-W2, 2 GiB, Kodi on a
 Raspberry Pi 3 as the HDMI source, a PC on the Type-C port) on 2026-10-01;
 the eMMC rows on 2026-10-02/03.
 
+**Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
+kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
+work): both images rebuilt from a clean tree and inspected (kernel and
+modules 6.18.55, the three new drivers and their DT nodes, kvmd-pm
+enabled, motd naming the commit; no SSH host keys, TLS keys, private keys
+or `authorized_keys`). The eMMC image went on with the SD system's
+`bpikvm-install-emmc`; the SD image was then written onto the card from the
+eMMC system (the card hot-plugged) and read back, md5 equal.
+
+| Path | Verified by |
+|---|---|
+| eMMC alone (SW4 = 0, no card) | root on `mmcblk1p2` grown to 6.8 GiB, no `mmcblk0` |
+| SD card, the eMMC's u-boot (SW4 = 0, card in) | bootargs from `bootsd`, root on `mmcblk0p2`, ISO partition grown to 232 GiB, SD bus tuned to 50 MHz 4-bit |
+
+On both: no failed unit; 12 OPPs to 1.4 GHz with the PMIC driving the CPU
+and L2 rails; the governor switched to `performance` while a client
+watched and back to `schedutil` after; 1080p60 capture, a kvmd snapshot,
+24 fps of MJPEG with Kodi playing video; HID online; HDMI audio through
+`arecord` with Kodi playing (peaks of -10 and -5 dBFS, not silence); a
+16 MiB ISO uploaded through kvmd's API onto the store, md5 equal (the
+directory on the eMMC image, `BPI-MSD` on the SD one); no CMA failure. The
+SD card's own u-boot (SW4 = 1) was not booted again: that u-boot did not
+change, and the kernel and rootfs it loads are the same as on the other
+paths.
+
 **Release check, 2026-10-03** (`kernel-6.18` @ `40f058e`): both images
 rebuilt from the tree, inspected (no keys of any kind; partitions, labels,
 fstab, motd, tools, and the driver fixes present in both the kernel and

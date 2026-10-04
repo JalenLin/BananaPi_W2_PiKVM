@@ -5,7 +5,8 @@ were built is `10-mainline-summary.md`; how any of it was worked out is
 `09-mainline-bringup.md`.
 
 Everything here was done on the board on 2026-10-03, on the images built
-from `kernel-6.18` at `40f058e`.
+from `kernel-6.18` at `40f058e`; the eMMC install and the SD image again on
+2026-10-04, at `061531b`.
 
 ## 1. Which image
 

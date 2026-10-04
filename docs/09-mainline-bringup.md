@@ -2176,6 +2176,12 @@ Measured with a viewer on a static screen, `performance` costs about 6 C
 (70 C against 64 C) for the same load; on a moving picture schedutil goes
 to the top anyway.
 
+Verified on both images built at `061531b` (the release check in §1 of
+`10-mainline-summary.md`): kvmd 4.219 with the rebased patch uploads onto
+both kinds of store, the combined HID is online, and ustreamer logs
+"CPU governor changed to performance" when a client arrives and
+"... to schedutil" when it leaves.
+
 ## 19. Sources
 
 | Source | Used for |
