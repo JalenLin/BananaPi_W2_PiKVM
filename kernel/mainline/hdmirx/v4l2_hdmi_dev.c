@@ -31,6 +31,8 @@
 #include "mipi_wrapper.h"
 #include "hdmirx_reg.h"
 #include "hdmirx_sysfs.h"
+#include <linux/of_reserved_mem.h>
+
 #include "hdmirx_clk_ctrl.h"
 
 #include "rx_drv/hdmiInternal.h"
@@ -480,6 +482,11 @@ static void hdmirx_load_edid(struct device_node *np)
 		HdmiRx_Save_DTS_EDID2p0_Table(&tbl);
 }
 
+static void hdmirx_release_mem(void *dev)
+{
+	of_reserved_mem_device_release(dev);
+}
+
 static int hdmirx_rtk_drv_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -498,6 +505,22 @@ static int hdmirx_rtk_drv_probe(struct platform_device *pdev)
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
 		goto err_clear;
+
+	/*
+	 * The capture buffers come from a pool of their own (the board DTS's
+	 * memory-region). They are allocated when streaming starts; from CMA,
+	 * on a busy system, that can fail while the CMA area is full of page
+	 * cache under I/O.
+	 */
+	ret = of_reserved_mem_device_init(&pdev->dev);
+	if (!ret) {
+		ret = devm_add_action_or_reset(&pdev->dev, hdmirx_release_mem,
+					       &pdev->dev);
+		if (ret)
+			goto err_clear;
+	} else if (ret != -ENODEV) {
+		goto err_clear;
+	}
 
 	ret = hdmirx_clock_init(pdev);
 	if (ret)

@@ -37,6 +37,11 @@ handles but nothing registered.
 Only the H.264 encoder is exposed: it is what was verified (1080p at about
 60 fps, from the HDMI receiver through DMA-BUF).
 
+Also: take a memory-region if the device tree gives one. Frame buffers
+are allocated when a stream starts, and on a board whose SD card is busy
+CMA can fail to move page cache out of the way in time (-ENOMEM with
+three quarters of the area free); a pool of its own never has to.
+
 diff --git a/drivers/media/platform/chips-media/coda/Kconfig b/drivers/media/platform/chips-media/coda/Kconfig
 index cb7b66c71..60b3d0a79 100644
 --- a/drivers/media/platform/chips-media/coda/Kconfig
@@ -197,7 +202,7 @@ index 84ded154a..32f4b5b8b 100644
  	coda_write(dev, quant_param, CODA_CMD_ENC_PIC_QS);
  
 diff --git a/drivers/media/platform/chips-media/coda/coda-common.c b/drivers/media/platform/chips-media/coda/coda-common.c
-index 9a57b042d..dcb764732 100644
+index 9a57b042d..4b2f7bcc9 100644
 --- a/drivers/media/platform/chips-media/coda/coda-common.c
 +++ b/drivers/media/platform/chips-media/coda/coda-common.c
 @@ -7,6 +7,7 @@
@@ -224,7 +229,15 @@ index 9a57b042d..dcb764732 100644
  #include <linux/reset.h>
  
  #include <media/v4l2-ctrls.h>
-@@ -298,6 +301,18 @@ static const struct coda_video_device *coda9_video_devices[] = {
+@@ -36,6 +39,7 @@
+ #include <media/videobuf2-v4l2.h>
+ #include <media/videobuf2-dma-contig.h>
+ #include <media/videobuf2-vmalloc.h>
++#include <linux/of_reserved_mem.h>
+ 
+ #include "coda.h"
+ #include "imx-vdoa.h"
+@@ -298,6 +302,18 @@ static const struct coda_video_device *coda9_video_devices[] = {
  	&coda_bit_decoder,
  };
  
@@ -243,7 +256,7 @@ index 9a57b042d..dcb764732 100644
  /*
   * Normalize all supported YUV 4:2:0 formats to the value used in the codec
   * tables.
-@@ -390,6 +405,8 @@ const char *coda_product_name(int product)
+@@ -390,6 +406,8 @@ const char *coda_product_name(int product)
  		return "CODA7541";
  	case CODA_960:
  		return "CODA960";
@@ -252,7 +265,7 @@ index 9a57b042d..dcb764732 100644
  	default:
  		snprintf(buf, sizeof(buf), "(0x%04x)", product);
  		return buf;
-@@ -822,8 +839,10 @@ static int coda_s_fmt(struct coda_ctx *ctx, struct v4l2_format *f,
+@@ -822,8 +840,10 @@ static int coda_s_fmt(struct coda_ctx *ctx, struct v4l2_format *f,
  		ctx->tiled_map_type = GDI_TILED_FRAME_MB_RASTER_MAP;
  		break;
  	case V4L2_PIX_FMT_NV12:
@@ -264,7 +277,7 @@ index 9a57b042d..dcb764732 100644
  			ctx->tiled_map_type = GDI_TILED_FRAME_MB_RASTER_MAP;
  			break;
  		}
-@@ -2319,6 +2338,9 @@ static void coda_encode_ctrls(struct coda_ctx *ctx)
+@@ -2319,6 +2339,9 @@ static void coda_encode_ctrls(struct coda_ctx *ctx)
  		V4L2_CID_MPEG_VIDEO_BITRATE, 0, 32767000, 1000, 0);
  	v4l2_ctrl_new_std(&ctx->ctrls, &coda_ctrl_ops,
  		V4L2_CID_MPEG_VIDEO_GOP_SIZE, 0, max_gop_size, 1, 16);
@@ -274,7 +287,7 @@ index 9a57b042d..dcb764732 100644
  	v4l2_ctrl_new_std(&ctx->ctrls, &coda_ctrl_ops,
  		V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, 0, 51, 1, 25);
  	v4l2_ctrl_new_std(&ctx->ctrls, &coda_ctrl_ops,
-@@ -2657,7 +2679,9 @@ static int coda_open(struct file *file)
+@@ -2657,7 +2680,9 @@ static int coda_open(struct file *file)
  		 * The enable_bwb module parameter allows to override this.
  		 */
  		if (enable_bwb || ctx->inst_type == CODA_INST_ENCODER)
@@ -285,7 +298,7 @@ index 9a57b042d..dcb764732 100644
  		fallthrough;
  	case CODA_HX4:
  	case CODA_7541:
-@@ -2783,6 +2807,67 @@ static const struct v4l2_file_operations coda_fops = {
+@@ -2783,6 +2808,67 @@ static const struct v4l2_file_operations coda_fops = {
  	.mmap		= v4l2_m2m_fop_mmap,
  };
  
@@ -353,7 +366,7 @@ index 9a57b042d..dcb764732 100644
  static int coda_hw_init(struct coda_dev *dev)
  {
  	u32 data;
-@@ -2797,7 +2882,10 @@ static int coda_hw_init(struct coda_dev *dev)
+@@ -2797,7 +2883,10 @@ static int coda_hw_init(struct coda_dev *dev)
  	if (ret)
  		goto err_clk_ahb;
  
@@ -365,7 +378,7 @@ index 9a57b042d..dcb764732 100644
  
  	/*
  	 * Copy the first CODA_ISRAM_SIZE in the internal SRAM.
-@@ -2850,7 +2938,10 @@ static int coda_hw_init(struct coda_dev *dev)
+@@ -2850,7 +2939,10 @@ static int coda_hw_init(struct coda_dev *dev)
  		coda_write(dev, CODA7_STREAM_BUF_PIC_FLUSH,
  			   CODA_REG_BIT_STREAM_CTRL);
  	}
@@ -377,7 +390,7 @@ index 9a57b042d..dcb764732 100644
  		coda_write(dev, CODA9_FRAME_ENABLE_BWB,
  				CODA_REG_BIT_FRAME_MEM_CTRL);
  	else
-@@ -3057,6 +3148,7 @@ enum coda_platform {
+@@ -3057,6 +3149,7 @@ enum coda_platform {
  	CODA_IMX53,
  	CODA_IMX6Q,
  	CODA_IMX6DL,
@@ -385,7 +398,7 @@ index 9a57b042d..dcb764732 100644
  };
  
  static const struct coda_devtype coda_devdata[] = {
-@@ -3134,6 +3226,24 @@ static const struct coda_devtype coda_devdata[] = {
+@@ -3134,6 +3227,24 @@ static const struct coda_devtype coda_devdata[] = {
  		.tempbuf_size = 204 * 1024,
  		.iram_size    = 0x1f000, /* leave 4k for suspend code */
  	},
@@ -410,7 +423,7 @@ index 9a57b042d..dcb764732 100644
  };
  
  static const struct of_device_id coda_dt_ids[] = {
-@@ -3142,6 +3252,7 @@ static const struct of_device_id coda_dt_ids[] = {
+@@ -3142,10 +3253,16 @@ static const struct of_device_id coda_dt_ids[] = {
  	{ .compatible = "fsl,imx53-vpu", .data = &coda_devdata[CODA_IMX53] },
  	{ .compatible = "fsl,imx6q-vpu", .data = &coda_devdata[CODA_IMX6Q] },
  	{ .compatible = "fsl,imx6dl-vpu", .data = &coda_devdata[CODA_IMX6DL] },
@@ -418,7 +431,38 @@ index 9a57b042d..dcb764732 100644
  	{ /* sentinel */ }
  };
  MODULE_DEVICE_TABLE(of, coda_dt_ids);
-@@ -3192,7 +3303,7 @@ static int coda_probe(struct platform_device *pdev)
+ 
++static void coda_release_mem(void *dev)
++{
++	of_reserved_mem_device_release(dev);
++}
++
+ static int coda_probe(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+@@ -3172,6 +3289,21 @@ static int coda_probe(struct platform_device *pdev)
+ 		return PTR_ERR(dev->clk_ahb);
+ 	}
+ 
++	/*
++	 * A memory-region of its own, if the board gives one: frame buffers
++	 * come at stream start, and on a busy system CMA can fail to free
++	 * a contiguous range in time.
++	 */
++	ret = of_reserved_mem_device_init(&pdev->dev);
++	if (!ret) {
++		ret = devm_add_action_or_reset(&pdev->dev, coda_release_mem,
++					       &pdev->dev);
++		if (ret)
++			return ret;
++	} else if (ret != -ENODEV) {
++		return dev_err_probe(&pdev->dev, ret, "memory-region\n");
++	}
++
+ 	/* Get  memory for physical registers */
+ 	dev->regs_base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(dev->regs_base))
+@@ -3192,7 +3324,7 @@ static int coda_probe(struct platform_device *pdev)
  	}
  
  	/* JPEG IRQ */
@@ -427,7 +471,7 @@ index 9a57b042d..dcb764732 100644
  		irq = platform_get_irq_byname(pdev, "jpeg");
  		if (irq < 0)
  			return irq;
-@@ -3215,9 +3326,16 @@ static int coda_probe(struct platform_device *pdev)
+@@ -3215,9 +3347,16 @@ static int coda_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -445,7 +489,7 @@ index 9a57b042d..dcb764732 100644
  		dev_err(&pdev->dev, "iram pool not available\n");
  		return -ENOMEM;
  	}
-@@ -3257,10 +3375,13 @@ static int coda_probe(struct platform_device *pdev)
+@@ -3257,10 +3396,13 @@ static int coda_probe(struct platform_device *pdev)
  	}
  
  	dev->iram.size = dev->devtype->iram_size;

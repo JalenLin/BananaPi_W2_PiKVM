@@ -2583,7 +2583,7 @@ now matches the interface (`Path=platform-98016000.ethernet`) and sets
 only `MACAddressPolicy=persistent`. The MAC now comes from the machine ID,
 the same over reboots (checked twice), and the name is still eth0.
 
-## 22. Found under load, open (2026-10-04)
+## 22. Found under load (2026-10-04)
 
 **H.264 did not start once the SD card was busy.** The heavy run began
 with ustreamer starting its encoder while the SD writes started. coda
@@ -2593,6 +2593,28 @@ asked the CMA area for 765 contiguous pages (a 3 MiB frame buffer). It got
 could not move. ustreamer logged `Can't send INPUT-DMA buffer: Cannot
 allocate memory` and sent no H.264 for the rest of the session (an hour).
 MJPEG kept going.
+
+The HDMI receiver's capture buffers are allocated at stream start too,
+and have the same exposure. **Fix:** neither allocates from CMA any more.
+The BSP's second media heap (0x11000000, 146 MiB, already carved out for
+the video output, which uses 8 MiB of it) is split into three
+`shared-dma-pool`s:
+
+| Pool | Size | Use |
+|---|---|---|
+| `media-heap@11000000` | 50 MiB | the video output (must stay below 512 MiB) |
+| `vpu-pool@14200000` | 32 MiB | coda; about 15 MiB while encoding 1080p |
+| `hdmirx-pool@16200000` | 64 MiB | capture: 19 MiB at 1080p NV12, 51 MiB at 1080p ARGB |
+
+coda (patch 0012) and the receiver take their `memory-region` with
+`of_reserved_mem_device_init()`. No memory moves: these 146 MiB were
+already reserved.
+
+Check: 20 stream starts, each a new ustreamer (kvmd's 10 s stop delay
+waited out), while the board wrote 600 MiB files without sync and read the
+1 GiB MSD image in a loop. Page cache was 0.8-1.2 GiB, dirty 70-170 MiB,
+and CMA down to 5 MiB free. H.264 came up every time (23-30 fps), with no
+allocation failure.
 
 **Keyboard reports paused for 2-10 s, 58 times in an hour**, in the same
 run (SD writes + MSD traffic + everything else; load average about 12).

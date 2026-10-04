@@ -116,7 +116,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | USB OTG (Type-C) | done | the target enumerates keyboard, mouse and mass storage | §7, §10 |
 | HDMI capture | done | 1080p60 from the receiver, EDID over DDC, NV12; after either u-boot (§4 of this file) | §10 |
 | MJPEG stream | done | kvmd's ustreamer, ~22 fps of JPEG to a client | §10 |
-| H.264 encoding (VE1) | done | CODA980 through the mainline `coda` driver, 1080p, ~70 fps capacity | §11 |
+| H.264 encoding (VE1) | done | CODA980 through the mainline `coda` driver, 1080p, ~70 fps capacity. Its buffers and the capture buffers come from pools of their own, not CMA: with the SD card busy a CMA allocation once failed and H.264 stayed off for the session. 20 restarts under page-cache pressure, all fine | §11, `docs/09` §22 |
 | Direct H.264 (kvmd-media) | done | the Web UI's H.264 mode | §11 |
 | WebRTC (Janus) | done | 1920x1080 at ~30 fps to a headless WebRTC client | §11 |
 | HDMI audio | done | ALSA card `hdmirx`, 48 kHz stereo; music from Kodi over WebRTC (Opus) | §13 |

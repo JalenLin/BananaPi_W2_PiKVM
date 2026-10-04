@@ -100,13 +100,38 @@
 		};
 
 		/*
-		 * Not handed to the firmware, so it is the video output's:
-		 * scanout buffers for the HDMI out (rtd129x-vo), which the
-		 * audio CPU reads and so must be below 512 MiB.
+		 * The BSP's second media heap, 0x11000000 + 146 MiB, is not
+		 * handed to the firmware, so it is ours. Three pools, so that
+		 * buffers allocated when a stream starts never wait on CMA:
+		 * with the SD card busy, CMA is full of page cache that it
+		 * cannot always move, and coda's 3 MiB frame buffer once
+		 * failed that way (docs/09 §22).
+		 *
+		 * The video output's: scanout buffers for the HDMI out
+		 * (rtd129x-vo), which the audio CPU reads and so must be
+		 * below 512 MiB. fbdev takes 8 MiB.
 		 */
 		ion_media2: media-heap@11000000 {
 			compatible = "shared-dma-pool";
-			reg = <0x11000000 0x09200000>;
+			reg = <0x11000000 0x03200000>;
+			no-map;
+		};
+
+		/* coda (VE1): ~15 MiB while encoding 1080p */
+		vpu_pool: vpu-pool@14200000 {
+			compatible = "shared-dma-pool";
+			reg = <0x14200000 0x02000000>;
+			no-map;
+		};
+
+		/*
+		 * The HDMI receiver's capture buffers: ustreamer's five plus
+		 * the driver's scratch frame, 19 MiB at 1080p NV12 and 51 MiB
+		 * at 1080p ARGB.
+		 */
+		hdmirx_pool: hdmirx-pool@16200000 {
+			compatible = "shared-dma-pool";
+			reg = <0x16200000 0x04000000>;
 			no-map;
 		};
 
@@ -633,6 +658,7 @@
 	 */
 	hdmirx: hdmirx@34000 {
 		compatible = "realtek,rtd1295-hdmirx";
+		memory-region = <&hdmirx_pool>;
 		reg = <0x37000 0xe0>,
 		      <0x34000 0xf54>,
 		      <0x35f00 0x2c>,
@@ -733,6 +759,7 @@
 		clock-names = "per", "ahb";
 		resets = <&reset1 RTD1295_RSTN_VE1>;
 		realtek,crt = <&crt>;
+		memory-region = <&vpu_pool>;
 	};
 
 	/*
