@@ -50,7 +50,9 @@ The `6a5e4bd` eMMC image went onto the eMMC afterwards, from the SD
 system. The first try stopped at 1.25 GB when `eth0` stopped sending (found
 and fixed afterwards, `docs/09` §21). After `ip link set eth0 down/up` the
 second try went through and read back md5 equal. Only the dtb differs
-from `387db27`.
+from `387db27`. The images were rebuilt once more at `745d2e5`, with the
+eth0 fixes. That eMMC image is on the board's eMMC, read back md5 equal,
+and the 3 GB went over without a stall.
 
 **Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
 kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
