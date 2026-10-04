@@ -99,7 +99,17 @@ Not done:
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
 - **The board's own HDMI output**: no driver; the console is the serial port
   and the network. PiKVM itself does not need it.
-- **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
+- **Audio to the target and the webcam (Janus aplay/vplay)**: not possible
+  next to the keyboard, mouse and virtual media. Both are USB gadget
+  functions on the Type-C port, and its dwc3 has six endpoints of which
+  three are IN, ep0 included (`GHWPARAMS3` 0x030c6485: `NUM_EPS` 6,
+  `NUM_IN_EPS` 3). The combined HID takes one IN (interrupt) and the mass
+  storage the other (bulk). kvmd's microphone (`uac2`, playback towards the
+  target) needs an isochronous IN, plus an interrupt IN for its volume and
+  mute controls; the webcam (`uvc`) needs IN endpoints too. Without the
+  mass storage, one IN would be free -- enough for the microphone only if
+  kvmd also turned the UAC2 controls off, which it does not. Left as is:
+  virtual media is the more useful of the two.
 - **ATX power control**: the GPIO side is ready (§7) but nothing was driven
   or connected; it is off in kvmd's config.
 - **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers. The
