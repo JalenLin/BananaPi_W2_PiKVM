@@ -400,6 +400,27 @@
 	};
 };
 
+&misc {
+	/*
+	 * MISC GPIO 0-100: most of the 40-pin header (docs/10 §7). Realtek's
+	 * mainline driver (gpio-rtd). No gpio-ranges: mainline has no RTD1295
+	 * pinctrl, and the header pins are GPIOs from reset (function 0 in
+	 * MUXPAD 0x9801a908-910; read so on the board after the eMMC u-boot).
+	 *
+	 * The ISO GPIOs (header pins 7, 8, 10, 16, 18, 22) are left out: the
+	 * driver claims 0x98007000-0x980070ff for their interrupt status,
+	 * which overlaps the ISO reset and clock controllers at 0x88/0x8c.
+	 */
+	misc_gpio: gpio@100 {
+		compatible = "realtek,rtd1295-misc-gpio";
+		reg = <0x100 0x100>, <0x0 0xc0>;
+		interrupt-parent = <&misc_irq_mux>;
+		interrupts = <19>, <20>;	/* assert, deassert */
+		gpio-controller;
+		#gpio-cells = <2>;
+	};
+};
+
 /* CLK_EN_USB, CLK_EN1 bit 4 */
 #define RTD129X_CLK_EN_USB	4
 

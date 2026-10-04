@@ -43,7 +43,20 @@ kvmd:
             device: ""
 
     atx:
-        # The 40-pin ATX control lines are not wired yet.
+        # Off: not tried with an ATX board yet. The lines are MISC GPIOs on
+        # the 40-pin header, /dev/kvmd-gpio (docs/10 §7); to use them, put
+        # this in /etc/kvmd/override.yaml under kvmd: and restart kvmd:
+        #
+        #   atx:
+        #       type: gpio
+        #       power_led_pin: 8        # header pin 26
+        #       hdd_led_pin: 27         # header pin 15
+        #       power_switch_pin: 17    # header pin 11
+        #       reset_switch_pin: 25    # header pin 13
+        #
+        # The pins have their pads' pull-ups on: an LED circuit that pulls
+        # the pin low when lit needs power_led_inverted / hdd_led_inverted:
+        # true, and one that drives it high needs pull-downs on the board.
         type: disabled
 
     msd:

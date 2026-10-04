@@ -88,6 +88,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz at the BSP's voltages, the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
+| ATX lines (GPIO) | prepared, not tried | the MISC GPIO controller (mainline `gpio-rtd`) as `/dev/kvmd-gpio`; four header pins chosen and checked (GPIO function, inputs, pull-ups, edge detection can be requested); kvmd accepts the config. ATX stays off: no ATX board was connected | §7 of this file |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
 
 Not done:
@@ -99,7 +100,8 @@ Not done:
 - **The board's own HDMI output**: no driver; the console is the serial port
   and the network. PiKVM itself does not need it.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not wired.
-- **ATX power control**: not wired on this board.
+- **ATX power control**: the GPIO side is ready (§7) but nothing was driven
+  or connected; it is off in kvmd's config.
 - **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers. The
   hwnat survey is in `docs/06-changes.md` §11 (on `main`).
 
@@ -494,3 +496,104 @@ eMMC with one in -- its u-boot tries the card, finds nothing and falls
 back. A card carrying the SD *system* has a `BPI-MSD` partition too (its
 p3), and is picked up as the store, which is the point: the ISOs are on
 the card either way.
+
+## 7. ATX power control (GPIO)
+
+PiKVM's ATX plugin needs four lines, all on one GPIO chip: two outputs
+(power and reset buttons) and two inputs (power and HDD LEDs). This is
+worked out and the GPIO side is in place, but **it has not been tried with
+an ATX board**: nothing was connected and no line was driven. The plugin
+stays `type: disabled`.
+
+### The 40-pin header
+
+From the schematic (sheet "15 GPIO", page 13 of the PDF, `CON2`) and the
+BPI wiki's table, which agree on the GPIO numbers. (The two disagree on
+which of pins 3 and 5 is I2C5's SDA.) The schematic marks ISO GPIO nets
+`IGPIO`; the rest are MISC GPIOs:
+
+| Pin | GPIO | Also | Pin | GPIO | Also |
+|---|---|---|---|---|---|
+| 3 | MISC 13 | I2C5 | 4 | 5 V | |
+| 5 | MISC 14 | I2C5 | 6 | GND | |
+| 7 | ISO 21 | PWM0 | 8 | ISO 3 | UART2 TX |
+| 9 | GND | | 10 | ISO 2 | UART2 RX |
+| 11 | MISC 17 | | 12 | MISC 58 | AO_BCK |
+| 13 | MISC 25 | I2C3 | 14 | GND | |
+| 15 | MISC 27 | I2C3 | 16 | ISO 5 | UART2 RTS |
+| 17 | 3.3 V | | 18 | ISO 4 | UART2 CTS |
+| 19 | MISC 7 | SPI MOSI | 20 | GND | |
+| 21 | MISC 4 | SPI MISO | 22 | ISO 9 | IR TX |
+| 23 | MISC 5 | SPI CLK | 24 | MISC 6 | SPI CS |
+| 25 | GND | | 26 | MISC 8 | |
+| 27 | MISC 12 | I2C4 | 28 | MISC 11 | I2C4 |
+| 29 | MISC 100 | | 30 | GND | |
+| 31 | MISC 21 | | 32 | MISC 54 | SPDIF |
+| 33 | MISC 59 | AO_CK | 34 | GND | |
+| 35 | MISC 57 | AO_LRCK | 36 | MISC 22 | |
+| 37 | MISC 23 | | 38 | MISC 24 | |
+| 39 | GND | | 40 | MISC 60 | AO_D0 |
+
+Pin 1 is 3.3 V and pin 2 is 5 V. The kernel numbers MISC lines 0-100 on
+their own chip (`gpiochip0`, `9801b100.gpio`).
+
+### The lines chosen
+
+A Raspberry Pi PiKVM uses header pins 18 and 15 for the LEDs and 16 and 13
+for the buttons. On the W2, 16 and 18 are ISO GPIOs. The ISO controller is
+not in the device tree: mainline's driver claims 0x98007000-0x980070ff for
+its interrupt status, and that overlaps the ISO reset and clock
+controllers. So all four lines are MISC GPIOs, on plain pins that have no
+use on this board. Two of them are where the Pi has them:
+
+| kvmd option | GPIO | Header pin | Pi PiKVM pin |
+|---|---|---|---|
+| `power_led_pin` | 8 | 26 | 18 |
+| `hdd_led_pin` | 27 | 15 | 15 |
+| `power_switch_pin` | 17 | 11 | 16 |
+| `reset_switch_pin` | 25 | 13 | 13 |
+
+Checked on the board:
+
+- All four are GPIOs from reset: function 0 in `MUXPAD` 0x9801a908
+  (GPIO 25, 27), 0x9801a90c (GPIO 17) and 0x9801a910 (GPIO 8). Read
+  after the eMMC's u-boot; the SD card's u-boot was not checked.
+- All four are inputs and read high: their pads have the pull-up on
+  (0x3 in `PCONF` 0x9801a92c and 0x9801a938).
+- `gpiomon` can request edge detection on them, which goes through the
+  MISC interrupt mux.
+- With these four pins in an override file, kvmd accepts and resolves
+  the config (`kvmd -m`). kvmd was not run with it.
+
+### What is in the image
+
+- The MISC GPIO node in the board DTS: `realtek,rtd1295-misc-gpio`,
+  interrupts 19/20 of the MISC mux.
+- A udev rule that points `/dev/kvmd-gpio` at it (kvmd is in the `gpio`
+  group).
+- The config to switch it on, as a comment in `/usr/lib/kvmd/main.yaml`.
+  It goes into `/etc/kvmd/override.yaml`:
+
+```yaml
+kvmd:
+    atx:
+        type: gpio
+        power_led_pin: 8
+        hdd_led_pin: 27
+        power_switch_pin: 17
+        reset_switch_pin: 25
+```
+
+### Electrical notes, for whoever wires it
+
+- 3.3 V logic, like the Pi.
+- **The pads pull up**, where a Pi's default for these pins is pull-down,
+  and kvmd sets no bias. An LED stage that pulls the pin low when the LED
+  is on works with `*_led_inverted: true`. One that drives the pin high (a
+  board made for a Pi's pull-downs) needs pull-down resistors on the board,
+  or the pads changed to pull-down (`PCONF` bit 0 of each pin's nibble).
+- **Until kvmd starts, the button pins are inputs with the pull-up on.**
+  They float at 3.3 V through tens of kilohms. An optocoupler LED behind a
+  resistor will not light on that, but a high-impedance gate driver could
+  see a press while the board boots.
+

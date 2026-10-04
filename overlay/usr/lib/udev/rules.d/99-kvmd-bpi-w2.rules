@@ -21,3 +21,9 @@ KERNEL=="hidg1", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse"
 # with --h264-m2m-device. kvmd runs ustreamer as the kvmd user.
 SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", ATTR{name}=="coda-video-encoder", \
     SYMLINK+="kvmd-h264", GROUP="kvmd", MODE="0660"
+
+# The MISC GPIOs, most of the 40-pin header, for kvmd's ATX plugin (its
+# default device is /dev/kvmd-gpio). Matched by the controller, not by the
+# chip number, which depends on probe order. kvmd is in the gpio group.
+SUBSYSTEM=="gpio", KERNEL=="gpiochip[0-9]*", KERNELS=="9801b100.gpio", \
+    SYMLINK+="kvmd-gpio"
