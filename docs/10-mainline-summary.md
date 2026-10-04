@@ -116,8 +116,15 @@ Not done:
   virtual media is the more useful of the two.
 - **ATX power control**: the GPIO side is ready (§7) but nothing was driven
   or connected; it is off in kvmd's config.
-- **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers. The
-  hwnat survey is in `docs/06-changes.md` §11 (on `main`).
+- **The second RJ45 (the hwnat switch), SATA, PCIe, IR**: no drivers, and
+  set aside for a project of their own (2026-10-04): PiKVM does not need
+  them. The hwnat survey is in `docs/06-changes.md` §11 (on `main`). One
+  more finding from the vendor's router code
+  (`hw_nat/AsicDriver/rtd129x_clk.c`): it switches the embedded gigabit
+  PHY over to the NAT engine (`ISO_POWERCUT_ETN`, `etn_gphy_switch_nat`).
+  That PHY is the one `eth0` uses, so a driver for the second port must
+  not do that step. A USB 3.0 Ethernet adapter works meanwhile: the image
+  has `r8152` and `ax88179_178a`.
 
 Seen, not yet looked into:
 
