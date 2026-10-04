@@ -27,6 +27,8 @@ BUILD="$PROJECT_ROOT/build"
 # the vendor initramfs come from the BSP either way -- only the Image and the
 # dtb differ. See docs/09-mainline-bringup.md.
 FLAVOUR="${KERNEL_FLAVOUR:-bsp}"
+# The PiKVM repository key, as in scripts/rootfs-arch.sh
+PIKVM_REPO_KEY=912C773ABBD1B584
 case "$FLAVOUR" in
     bsp)
         KIMAGE="$BSP/linux-rtk/arch/arm64/boot/Image"
@@ -268,7 +270,7 @@ cat > "$BUILD/motd" <<MOTD
     systemctl status kvmd kvmd-nginx
 
   The board's Type-C port goes to the target machine: keyboard, mouse and
-  virtual media (MSD). ATX is not wired.
+  virtual media (MSD). ATX: GPIO lines prepared, off in kvmd (see main.yaml).
   Video: ${MOTD_VIDEO}.
 
 MOTD
@@ -278,7 +280,7 @@ echo ">>> assembling the image (in a container, no loop device needed)"
 docker run --rm --entrypoint bash \
     -v "$BUILD:/b" -v "$BSP:/bsp:ro" debian:bookworm -euxc "
 apt-get update -qq
-apt-get install -qq -y e2fsprogs dosfstools mtools fdisk >/dev/null
+apt-get install -qq -y e2fsprogs dosfstools mtools fdisk gnupg >/dev/null
 
 cd /b
 rm -f $(basename "$OUT")
@@ -320,6 +322,20 @@ if [ $FLAVOUR = bsp ]; then
     cp -r /b/overlay-bsp/. /b/rootfs/
 fi
 install -m 644 /b/motd /b/rootfs/etc/motd
+# pacman's keyring: pacman-key --init made a master signing key when the
+# rootfs was built, and every card from this image would share it. Keep only
+# what the board needs to build its own (the PiKVM repository's public key,
+# lsigned by bpikvm-firstboot) and drop the rest.
+if [ -d /b/rootfs/etc/pacman.d/gnupg ]; then
+    kh=\$(mktemp -d)
+    cp -a /b/rootfs/etc/pacman.d/gnupg/. \$kh/
+    mkdir -p /b/rootfs/usr/share/bpikvm
+    gpg --homedir \$kh --batch --no-permission-warning --armor \
+        --export $PIKVM_REPO_KEY > /b/rootfs/usr/share/bpikvm/pikvm-repo.asc
+    grep -q 'BEGIN PGP PUBLIC KEY' /b/rootfs/usr/share/bpikvm/pikvm-repo.asc ||
+        { echo 'could not export the PiKVM repository key'; exit 1; }
+    rm -rf \$kh /b/rootfs/etc/pacman.d/gnupg
+fi
 # Units added to overlay/ after the rootfs was built (rootfs-arch.sh enables
 # the rest when it builds it)
 mkdir -p /b/rootfs/etc/systemd/system/multi-user.target.wants
