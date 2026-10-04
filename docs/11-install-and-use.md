@@ -191,13 +191,15 @@ login prompt) at 1080p60, the mode the boot loader sets. A USB keyboard on
 the board's USB ports types into it. It is a DRM device
 (`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as well.
 
-The mini DisplayPort output has a driver that is not yet proven. Passive
-mini DP to HDMI adapters (most cheap ones, e.g. ATEN VC980) cannot work
-on this board at all: it has no DP++ dual mode.
+The mini DisplayPort output shows the same console, at 1080p60, when a
+DisplayPort sink is plugged in: a DP monitor, or an adapter with a
+converter chip (checked with an ATEN VC920, mini DP to VGA). Passive mini
+DP to HDMI adapters (most cheap ones, e.g. ATEN VC980) cannot work on this
+board: it has no DP++ dual mode.
 
 ## 8. What is not there
 
 ATX power control is prepared but off (`10-mainline-summary.md` §7). Not
-there: a proven mini DisplayPort output, the second Ethernet port, and audio
+there: the second Ethernet port, and audio
 towards the controlled machine. The full list, with what each would need,
 is in §1 of `10-mainline-summary.md`.

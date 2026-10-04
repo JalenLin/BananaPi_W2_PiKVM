@@ -2355,7 +2355,7 @@ own HDMI IN, with kvmd's snapshot as the camera.
 - HDMI-in audio capture still works alongside it (`arecord` on
   `hw:hdmirx`).
 
-### The mini DisplayPort output (written, not yet seen working)
+### The mini DisplayPort output
 
 The firmware's VO feeds the DP transmitter too, but the transmitter is the
 ARM side's to set up. u-boot does not touch it (`CONFIG_DPTX_MODE` is off
@@ -2398,9 +2398,19 @@ own HDMI IN:
   neither. CONFIG1/CONFIG2 go only to 1 MOhm to ground (schematic page 7),
   and the transmitter has no TMDS mode.
 
-So passive adapters cannot work here, whatever the driver does. Everything
-past the AUX layer is still unverified. Checking it needs a DP monitor or
-an active adapter (one with a converter chip, usually USB-powered).
+So passive adapters cannot work here, whatever the driver does.
+
+Then with an ATEN VC920 (mini DP to VGA). DP to VGA cannot be passive: the
+adapter has a DP receiver and a DAC, powered from the connector, and it
+answers on AUX. Results:
+
+- The sink reported DPCD 1.1, 2 lanes, 2.7 Gb/s.
+- Training passed on the first try.
+- The firmware took the new TV system.
+- The user saw the picture on a VGA monitor.
+- Plugged in at boot, DP is on 0.3 s after the driver starts. Plugged in
+  later, it comes up on the next HPD poll.
+- HDMI kept working alongside it.
 
 Not done:
 

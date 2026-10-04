@@ -535,6 +535,7 @@ static void dp_hpd_work(struct work_struct *work)
 	if (hpd != dp->connected) {
 		dp->connected = hpd;
 		dp->tries = 0;
+		dp->polls = 0;		/* the first try right away */
 		dev_info(dp->vo->dev, "DP %s\n", hpd ? "connected" : "disconnected");
 		if (!hpd && dp->on) {
 			dp_off(dp);

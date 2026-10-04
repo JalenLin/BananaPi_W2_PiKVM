@@ -88,6 +88,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz at the BSP's voltages, the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
+| DisplayPort output (mini DP) | done | the same picture as HDMI, 1080p60 on 2 lanes: the driver sets up the transmitter and trains the link on hot plug, then the firmware mirrors HDMI to it. Seen on a VGA monitor through an ATEN VC920. Passive DP++ adapters cannot work (no dual mode on this board) | `docs/09` §20 |
 | HDMI output (the board's own) | done | own DRM driver on the audio firmware's video output: one plane at 1080p60 (the mode the boot loader sets), fbdev emulation, so `tty1` with a login prompt is on HDMI. Checked by cabling HDMI OUT to the board's own HDMI IN and capturing it: colour bars, the console, and a KMS client's SETCRTC and page flip (with its flip event) | `docs/09` §20 |
 | ATX lines (GPIO) | prepared, not tried | the MISC GPIO controller (mainline `gpio-rtd`) as `/dev/kvmd-gpio`; four header pins chosen and checked (GPIO function, inputs, pull-ups, edge detection can be requested); kvmd accepts the config. ATX stays off: no ATX board was connected | §7 of this file |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
@@ -98,11 +99,10 @@ Not done:
   boot loader flashed (`romflash.py`) and its u-boot environment set
   (`uboot-env.txt` through `ubstop.py`) over the serial console once,
   before `bpikvm-install-emmc` gives a bootable eMMC (§5).
-- **The mini DisplayPort output**: a driver is in `rtd129x-vo` (setup,
-  AUX, link training, then the firmware mirrors HDMI to it) but has not
-  been seen working. The only thing tried was a passive mini DP to HDMI
-  adapter (ATEN VC980), and the board cannot drive one: no DP++ dual
-  mode. It needs a DP monitor or an active adapter (`docs/09` §20).
+- **Passive mini DP adapters**: the DP output works with a sink that
+  speaks DP (a monitor, or an adapter with a converter chip such as the
+  ATEN VC920, mini DP to VGA). Passive mini DP to HDMI adapters (ATEN
+  VC980) cannot work: the board has no DP++ dual mode (`docs/09` §20).
 - **Other HDMI output modes**: the output runs at the mode the boot loader
   set (1080p60); the driver does not change it or read the monitor's EDID.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not possible
