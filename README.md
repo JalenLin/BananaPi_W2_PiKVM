@@ -182,6 +182,15 @@ build/          build outputs
 
 ## Hardware notes
 
+- **The display outputs show nothing useful on this line.** HDMI OUT
+  carries a 1280x720@60 signal, but the picture is a flat dark grey: the BSP
+  kernel draws no console on it. The mini DP output stays dark, because BSP
+  Linux never sets up the DP transmitter (on Android, the display service
+  does). The `kernel-6.18` line drives both, with the login console on them.
+  Checked on 2026-10-05 by looping HDMI OUT into HDMI IN.
+- That loop is also a trap for testing capture: the source is then 720p,
+  while `main.yaml` hard-codes `--resolution=1920x1080`, so ustreamer fails
+  with "Can't set device format: Invalid argument" until the two match.
 - The board's MAC address **changes on every boot**, so its IP changes too.
 - `reboot` works when booting from the on-board micro SD. An early note
   claiming it hangs at `wait rtk_check_system_ready_to_suspend` was wrong —
