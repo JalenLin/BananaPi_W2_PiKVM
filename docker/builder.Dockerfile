@@ -9,6 +9,11 @@ FROM debian:bullseye-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Bullseye's support ended in August 2026 and it moved to archive.debian.org.
+# deb.debian.org is dropping its packages while its indexes still list them,
+# so apt there fails with 404s.
+RUN sed -i 's|http://deb.debian.org|http://archive.debian.org|' /etc/apt/sources.list
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bc \
         bison \
