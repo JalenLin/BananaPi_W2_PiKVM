@@ -13,8 +13,9 @@ SHA-256 of every file.
 
 | Release | Kernel | Files |
 |---|---|---|
-| `v2.0-kernel6.18` (recommended) | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, eMMC boot | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
-| `v1.0-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13 | `bpiw2-pikvm.img.xz` (SD card) |
+| `v2.0-kernel6.18` | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, eMMC boot | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+
+The BSP 4.9 line has no prebuilt image; `make all` builds it (below).
 
 ```sh
 xzcat bpiw2-pikvm-mainline.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
