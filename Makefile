@@ -35,8 +35,11 @@ sources:
 kernel:
 	scripts/build-kernel.sh
 
+# The BSP's Makefile includes chosen_board.mk, which its configure writes.
+# make kernel runs that too, but the mainline line never runs make kernel.
 uboot:
-	scripts/in-docker.sh bash -c 'cd /work/vendor/bpi-w2-bsp && make u-boot'
+	scripts/in-docker.sh bash -c 'cd /work/vendor/bpi-w2-bsp && \
+	    { [ -f chosen_board.mk ] || ./configure BPI-W2-720P; } && make u-boot'
 
 rootfs:
 	scripts/build-rootfs.sh
