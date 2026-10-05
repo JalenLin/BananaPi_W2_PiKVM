@@ -19,9 +19,10 @@ from `kernel-6.18` at `40f058e`; the eMMC install and the SD image again on
 | ISOs | a partition of its own, the rest of the card | a directory on the root, or an SD card (§5) |
 | The SD slot is then | the system | free, usable for ISOs or data |
 
-Both are the same system: same kernel, same packages, same Web UI. Build
-them with `make image-mainline` and `make image-emmc` (§2 of
-`10-mainline-summary.md`).
+Both are the same system: same kernel, same packages, same Web UI.
+Prebuilt, xz-compressed copies are on the GitHub Releases page
+(`v2.0-kernel6.18`), or build them with `make image-mainline` and
+`make image-emmc` (§2 of `10-mainline-summary.md`).
 
 A board can hold both. The eMMC's boot loader tries the SD card first, so
 with a bootable card in, the card is what boots; take it out and the board
@@ -31,6 +32,8 @@ boots the eMMC.
 
 ```sh
 sudo dd if=build/bpiw2-pikvm-mainline.img of=/dev/sdX bs=4M conv=fsync status=progress
+# or, from the release
+xzcat bpiw2-pikvm-mainline.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 - **SW4 = 1** boots the SD card's own u-boot (from the SPI flash). **SW4 = 0**
@@ -94,6 +97,8 @@ With the board running the SD image, from the build machine:
 ```sh
 xz -T0 -c build/bpiw2-pikvm-mainline-emmc.img |
     ssh root@<board> 'xz -dc | bpikvm-install-emmc -y -'
+# or, from the release
+ssh root@<board> 'xz -dc | bpikvm-install-emmc -y -' < bpiw2-pikvm-mainline-emmc.img.xz
 ```
 
 Or copy the image to the board and run `bpikvm-install-emmc <image>` there.

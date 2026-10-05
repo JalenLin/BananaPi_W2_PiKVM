@@ -4,6 +4,32 @@
 (Realtek RTD1296), using **the board's own HDMI INPUT** for video capture.
 The deliverable is an SD card image you can flash and boot.
 
+## Download
+
+Prebuilt images are on the
+[Releases page](https://github.com/JalenLin/BananaPi_W2_PiKVM/releases),
+compressed with xz. Each release lists the commit it was built from and the
+SHA-256 of every file.
+
+| Release | Kernel | Files |
+|---|---|---|
+| `v2.0-kernel6.18` (recommended) | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, eMMC boot | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+| `v1.0-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13 | `bpiw2-pikvm.img.xz` (SD card) |
+
+```sh
+xzcat bpiw2-pikvm-mainline.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+```
+
+Then read [`docs/11-install-and-use.md`](docs/11-install-and-use.md) (the
+eMMC image is installed from a running SD system, not with `dd`). Log in as
+`admin` / `admin` on the web UI and `root` / `pikvm` on the console, and
+change both. The images carry no keys: every board generates its own SSH
+host keys, TLS certificate and pacman keyring on its first boot.
+
+The rest of this page describes the BSP 4.9 line it started from; the
+`kernel-6.18` line is summarised in
+[`docs/10-mainline-summary.md`](docs/10-mainline-summary.md).
+
 Status: **1080p60 HDMI IN capture, EDID served over DDC, USB HID
 (keyboard + mouse), kvmd and the stock PiKVM web UI — all verified on real
 hardware.**
@@ -21,8 +47,9 @@ It matters *how* each thing was verified, so:
 | Card expansion, first-boot keys | root grown to fill the card; 3 SSH host keys + TLS cert all generated on the board |
 | Boot integrity | No failed units; kvmd / kvmd-nginx / kvmd-otg / timesyncd all active; NTP synchronised |
 
-Virtual media (MSD) is limited by the SoC's USB endpoint budget and ATX is
-not wired up, so neither is enabled.
+On the BSP 4.9 line, virtual media (MSD) is limited by the SoC's USB
+endpoint budget and ATX is not wired up, so neither is enabled. On
+`kernel-6.18` virtual media works (docs/10 §1).
 
 ---
 
@@ -188,7 +215,9 @@ build/          build outputs
 
 ## Hardware notes
 
-- The board's MAC address **changes on every boot**, so its IP changes too.
+- On the BSP 4.9 line the board's MAC address **changes on every boot**, so
+  its IP changes too. On `kernel-6.18` it is derived from the machine-id: it
+  stays put across reboots and changes only when the card is flashed again.
 - `reboot` works when booting from the on-board micro SD. An early note
   claiming it hangs at `wait rtk_check_system_ready_to_suspend` was wrong —
   that line also appears in successful reboots. The real cause back then was
@@ -233,6 +262,18 @@ switching to it would be a functional regression -- see section 7 of
 `docs/08-kernel-uplift.md`.
 
 ## Licensing and upstreams
+
+This project's own files are licensed under the GNU General Public License,
+version 2 ([`LICENSE`](LICENSE)). The patches under `patches/` change
+upstream projects and are under those projects' licenses, listed below.
+
+The images also carry binaries that BPI publishes and that are not built
+here: u-boot's SPI image `spirom-bpi-w2.bin`, the audio CPU firmware
+`bluecore.audio` and the vendor initramfs from
+[BPI-W2-bsp](https://github.com/BPI-SINOVOIP/BPI-W2-bsp), and (on
+`kernel-6.18`) the video codec firmware from
+[BPI-1296-Android7](https://github.com/BPI-SINOVOIP/BPI-1296-Android7),
+fetched by `scripts/fetch-vpu-firmware.sh`.
 
 - Kernel: [BPI-SINOVOIP/BPI-W2-bsp](https://github.com/BPI-SINOVOIP/BPI-W2-bsp) (GPL-2.0); on `kernel-6.18` also [Linux stable](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git) (GPL-2.0) v6.18.55
 - [pikvm/kvmd](https://github.com/pikvm/kvmd) (GPL-3.0) v4.219 on `kernel-6.18` (v4.213 on `main`)
