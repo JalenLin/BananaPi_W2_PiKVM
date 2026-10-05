@@ -6,21 +6,15 @@ The deliverable is an SD card image you can flash and boot.
 
 ## Download
 
-Prebuilt images are on the
-[Releases page](https://github.com/JalenLin/BananaPi_W2_PiKVM/releases),
-compressed with xz, each with the commit it was built from and its SHA-256.
+A prebuilt image of the newer line, Linux 6.18 LTS with Arch Linux ARM and
+PiKVM's packages (H.264/WebRTC, virtual media, HDMI audio, eMMC boot), is on
+the [Releases page](https://github.com/JalenLin/BananaPi_W2_PiKVM/releases)
+as `v2.0-kernel6.18`. It is built from the
+[`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18)
+branch; follow `docs/11-install-and-use.md` there.
 
-| Release | Kernel | Files |
-|---|---|---|
-| `v2.0-kernel6.18` (recommended) | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, eMMC boot. Built from the [`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18) branch | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
-| `v1.0-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13: what this branch describes | `bpiw2-pikvm.img.xz` (SD card) |
-
-```sh
-xzcat bpiw2-pikvm.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
-```
-
-For the `kernel-6.18` images, follow `docs/11-install-and-use.md` on that
-branch.
+The BSP 4.9 line this branch describes has no prebuilt image; `make all`
+builds it (below).
 
 Status: **1080p60 HDMI IN capture, EDID served over DDC, USB HID
 (keyboard + mouse), kvmd and the stock PiKVM web UI — all verified on real
