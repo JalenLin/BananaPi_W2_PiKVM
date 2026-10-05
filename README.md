@@ -6,15 +6,18 @@ The deliverable is an SD card image you can flash and boot.
 
 ## Download
 
-A prebuilt image of the newer line, Linux 6.18 LTS with Arch Linux ARM and
-PiKVM's packages (H.264/WebRTC, virtual media, HDMI audio, eMMC boot), is on
-the [Releases page](https://github.com/JalenLin/BananaPi_W2_PiKVM/releases)
-as `v2.0-kernel6.18`. It is built from the
-[`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18)
-branch; follow `docs/11-install-and-use.md` there.
+Prebuilt images are on the
+[Releases page](https://github.com/JalenLin/BananaPi_W2_PiKVM/releases),
+compressed with xz, each with the commit it was built from and its SHA-256.
 
-The BSP 4.9 line this branch describes has no prebuilt image; `make all`
-builds it (below).
+| Release | Kernel | Files |
+|---|---|---|
+| `v2.0-kernel6.18` | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, the HDMI and mini DP outputs, eMMC boot. Built from the [`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18) branch; follow `docs/11-install-and-use.md` there | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+| `v1.1-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13: what this branch describes | `bpiw2-pikvm.img.xz` (SD card) |
+
+```sh
+xzcat bpiw2-pikvm.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+```
 
 Status: **1080p60 HDMI IN capture, EDID served over DDC, USB HID
 (keyboard + mouse), kvmd and the stock PiKVM web UI — all verified on real
@@ -224,6 +227,7 @@ build/          build outputs
 |-----|------------|
 | `main` | The BSP 4.9.119 line. This is the working deliverable and what the documentation describes |
 | `v1.0-bsp4.9` (tag) | An immutable snapshot of the verified BSP 4.9 state |
+| `v1.1-bsp4.9` (tag) | The BSP 4.9 line as released (2026-10-05): v1.0 plus the build fixes for Debian 11's end of life and the licence; its image is on the Releases page |
 | `mainline` | Research towards a mainline/LTS kernel. Diverges heavily and is not expected to be usable until it reaches M5 in `docs/08-kernel-uplift.md` |
 
 The two kernel lines are kept apart deliberately. `main` stays functional
