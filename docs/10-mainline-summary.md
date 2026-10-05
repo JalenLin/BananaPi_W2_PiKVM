@@ -65,6 +65,20 @@ machine ID and stayed the same, with the same address, over a reboot. A
 line printed on tty1 showed up in the capture of the board's own HDMI
 output, and the DP output showed on the monitor.
 
+The released SD image (`v2.0-kernel6.18`, the same bytes as `c371e00`'s)
+was then checked on its own, on 2026-10-05:
+- **Written and read back.** The board, running from the eMMC, downloaded
+  `bpiw2-pikvm-mainline.img.xz` from the GitHub release and wrote it to an
+  SD card. The download and the card's readback both matched SHA256SUMS.
+- **Booted.** The eMMC's u-boot booted the card (SW4 = 0, card in).
+- **First boot.** It made its own keys and keyring, and grew `BPI-MSD` to
+  232 GB. No unit failed, and the three memory pools were assigned.
+- **Video.** 1080p60 capture, and H.264 at 27 fps through kvmd-media.
+- **Keyboard and mouse.** Both reached the Pi, as report IDs 1 and 2 on
+  the one HID interface.
+- **Virtual media.** A 16 MiB image went through kvmd as a flash drive, and
+  the Pi read it back md5 equal.
+
 **Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
 kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
 work): both images rebuilt from a clean tree and inspected (kernel and
