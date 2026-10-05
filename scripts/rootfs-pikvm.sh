@@ -144,4 +144,10 @@ systemctl disable nginx.service
 # kvmd-otg creates the USB gadget (keyboard + mouse) before kvmd starts.
 systemctl enable kvmd.service kvmd-nginx.service kvmd-otg.service
 
+# /run is a tmpfs on the board but not in this container, so whatever the
+# packages left there would ship in the image -- among it the build host's
+# DNS servers, which systemd-resolved's postinst copies from /etc/resolv.conf
+# to /run/systemd/resolve/stub-resolv.conf.
+find /run -mindepth 1 -delete
+
 echo ">>> PiKVM userspace installed"
