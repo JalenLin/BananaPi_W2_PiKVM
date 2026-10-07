@@ -1,0 +1,91 @@
+From: Maxim Devaev <mdevaev@gmail.com>
+Date: Thu, 8 Oct 2026 02:57:02 +0800
+Subject: [PATCH 20/25] pikvm: hid remote wakeup support
+
+PiKVM's 1002-pikvm-hid-remote-wakeup-support.patch (pikvm/packages,
+linux-rpi-pikvm), ported to 6.18: f_hid's wakeup_on_write attribute, which
+kvmd-otg sets when otg.remote_wakeup is on, so a key press can wake a
+sleeping host.
+
+Changed from PiKVM's: the dwc2 part is left out (the RTD129x's OTG port is
+dwc3, which has its own usb_gadget_wakeup()), the attribute list took
+6.18's new "interval" attribute as context, and the wakeup is asked only
+while the gadget is suspended. dwc3 logs "not armed for remote wakeup" for
+each request the host has not armed, and hosts arm it only when they
+suspend the device, so asking on every write would log an error per
+report.
+---
+ drivers/usb/gadget/function/f_hid.c | 15 +++++++++++++++
+ drivers/usb/gadget/function/u_hid.h |  1 +
+ 2 files changed, 16 insertions(+)
+
+diff --git a/drivers/usb/gadget/function/f_hid.c b/drivers/usb/gadget/function/f_hid.c
+index 06d23d5..450fc84 100644
+--- a/drivers/usb/gadget/function/f_hid.c
++++ b/drivers/usb/gadget/function/f_hid.c
+@@ -74,6 +74,8 @@ struct f_hidg {
+ 	 *              will be used to receive reports.
+ 	 */
+ 	bool				use_out_ep;
++	/* attempt to wake up the host before write */
++	bool				wakeup_on_write;
+ 
+ 	/* recv report */
+ 	spinlock_t			read_spinlock;
+@@ -452,10 +454,20 @@ static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
+ 			    size_t count, loff_t *offp)
+ {
+ 	struct f_hidg *hidg  = file->private_data;
++	struct usb_composite_dev *cdev = hidg->func.config->cdev;
+ 	struct usb_request *req;
+ 	unsigned long flags;
+ 	ssize_t status = -ENOMEM;
+ 
++	/*
++	 * Wake the host first if it has suspended the bus, when the
++	 * function is set up to (wakeup_on_write). Only then: dwc3 logs an
++	 * error for each wakeup asked while the host has not armed remote
++	 * wakeup, and a host arms it only on its way into suspend.
++	 */
++	if (hidg->wakeup_on_write && cdev->suspended)
++		usb_gadget_wakeup(cdev->gadget);
++
+ 	spin_lock_irqsave(&hidg->write_spinlock, flags);
+ 
+ 	if (!hidg->req) {
+@@ -1387,6 +1399,7 @@ CONFIGFS_ATTR(f_hid_opts_, name)
+ F_HID_OPT(subclass, 8, 255);
+ F_HID_OPT(protocol, 8, 255);
+ F_HID_OPT(no_out_endpoint, 8, 1);
++F_HID_OPT(wakeup_on_write, 8, 1);
+ F_HID_OPT(report_length, 16, 65535);
+ 
+ static ssize_t f_hid_opts_report_desc_show(struct config_item *item, char *page)
+@@ -1494,6 +1507,7 @@ static struct configfs_attribute *hid_attrs[] = {
+ 	&f_hid_opts_attr_subclass,
+ 	&f_hid_opts_attr_protocol,
+ 	&f_hid_opts_attr_no_out_endpoint,
++	&f_hid_opts_attr_wakeup_on_write,
+ 	&f_hid_opts_attr_report_length,
+ 	&f_hid_opts_attr_interval,
+ 	&f_hid_opts_attr_report_desc,
+@@ -1646,6 +1660,7 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
+ 		}
+ 	}
+ 	hidg->use_out_ep = !opts->no_out_endpoint;
++	hidg->wakeup_on_write = opts->wakeup_on_write;
+ 
+ 	++opts->refcnt;
+ 	mutex_unlock(&opts->lock);
+diff --git a/drivers/usb/gadget/function/u_hid.h b/drivers/usb/gadget/function/u_hid.h
+index a9ed972..54350e4 100644
+--- a/drivers/usb/gadget/function/u_hid.h
++++ b/drivers/usb/gadget/function/u_hid.h
+@@ -21,6 +21,7 @@ struct f_hid_opts {
+ 	unsigned char			subclass;
+ 	unsigned char			protocol;
+ 	unsigned char			no_out_endpoint;
++	unsigned char			wakeup_on_write;
+ 	unsigned short			report_length;
+ 	unsigned short			report_desc_length;
+ 	unsigned char			*report_desc;

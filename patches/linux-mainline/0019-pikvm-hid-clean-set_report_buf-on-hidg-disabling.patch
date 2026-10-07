@@ -1,0 +1,39 @@
+From: Maxim Devaev <mdevaev@gmail.com>
+Date: Sun, 18 Jan 2026 05:40:59 +0200
+Subject: [PATCH 19/25] pikvm: hid: clean set_report_buf on hidg disabling
+
+
+PiKVM's 1001-pikvm-hid-clean-set_report_buf-on-hidg-disabling.patch (pikvm/packages, packages/linux-rpi-pikvm),
+unchanged. It applies to 6.18 as it is.
+
+---
+ drivers/usb/gadget/function/f_hid.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/gadget/function/f_hid.c b/drivers/usb/gadget/function/f_hid.c
+index ee59e65..06d23d5 100644
+--- a/drivers/usb/gadget/function/f_hid.c
++++ b/drivers/usb/gadget/function/f_hid.c
+@@ -413,7 +413,7 @@ static ssize_t f_hidg_ssreport_read(struct file *file, char __user *buffer,
+ 		count -= copy_to_user(buffer, tmp_buf, count);
+ 		kfree(tmp_buf);
+ 	} else {
+-		count = -ENOMEM;
++		count = -ESHUTDOWN;
+ 	}
+ 
+ 	wake_up(&hidg->read_queue);
+@@ -996,6 +996,13 @@ static void hidg_disable(struct usb_function *f)
+ 		spin_unlock_irqrestore(&hidg->read_spinlock, flags);
+ 	}
+ 
++	if (!hidg->use_out_ep) {
++		spin_lock_irqsave(&hidg->read_spinlock, flags);
++		kfree(hidg->set_report_buf);
++		hidg->set_report_buf = NULL;
++		spin_unlock_irqrestore(&hidg->read_spinlock, flags);
++	}
++
+ 	spin_lock_irqsave(&hidg->get_report_spinlock, flags);
+ 	if (!hidg->get_report_returned) {
+ 		usb_ep_free_request(f->config->cdev->gadget->ep0, hidg->get_req);

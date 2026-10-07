@@ -1,0 +1,108 @@
+From: Maxim Devaev <mdevaev@gmail.com>
+Date: Sun, 18 Jan 2026 06:19:56 +0200
+Subject: [PATCH 25/25] pikvm: nbd: fine tuning
+
+PiKVM's 1401-pikvm-nbd-fine-tuning.patch (pikvm/packages, packages/linux-rpi-pikvm),
+unchanged. It applies to 6.18 as it is.
+
+* Removed CAP_SYS_ADMIN requirement for ioctl().
+* Set BLKROSET automatically with NBD_FLAG_READ_ONLY.
+* Added online/offline uevents for NBD_DO_IT.
+* Added sysfs "disconnect" pseudofile.
+---
+ drivers/block/nbd.c | 43 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/block/nbd.c b/drivers/block/nbd.c
+index a05ff68..208d883 100644
+--- a/drivers/block/nbd.c
++++ b/drivers/block/nbd.c
+@@ -21,6 +21,7 @@
+ #include <linux/sched.h>
+ #include <linux/sched/mm.h>
+ #include <linux/fs.h>
++#include <linux/sysfs.h>
+ #include <linux/bio.h>
+ #include <linux/stat.h>
+ #include <linux/errno.h>
+@@ -1555,8 +1556,10 @@ static int nbd_start_device_ioctl(struct nbd_device *nbd)
+ 	if (max_part)
+ 		set_bit(GD_NEED_PART_SCAN, &nbd->disk->state);
+ 	mutex_unlock(&nbd->config_lock);
++	kobject_uevent(&nbd_to_dev(nbd)->kobj, KOBJ_ONLINE);
+ 	ret = wait_event_interruptible(config->recv_wq,
+ 					 atomic_read(&config->recv_threads) == 0);
++	kobject_uevent(&nbd_to_dev(nbd)->kobj, KOBJ_OFFLINE);
+ 	if (ret) {
+ 		sock_shutdown(nbd);
+ 		nbd_clear_que(nbd);
+@@ -1621,6 +1624,14 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
+ 
+ 	case NBD_SET_FLAGS:
+ 		config->flags = arg;
++		/*
++		 * This is needed to avoid manual BLKROSET
++		 * since it requires CAP_SYS_ADMIN.
++		 */
++		if (config->flags & NBD_FLAG_READ_ONLY)
++			bdev_set_flag(bdev, BD_READ_ONLY);
++		else
++			bdev_clear_flag(bdev, BD_READ_ONLY);
+ 		return 0;
+ 	case NBD_DO_IT:
+ 		return nbd_start_device_ioctl(nbd);
+@@ -1647,8 +1658,10 @@ static int nbd_ioctl(struct block_device *bdev, blk_mode_t mode,
+ 	struct nbd_config *config = nbd->config;
+ 	int error = -EINVAL;
+ 
++#if 0
+ 	if (!capable(CAP_SYS_ADMIN))
+ 		return -EPERM;
++#endif
+ 
+ 	/* The block layer will pass back some non-nbd ioctls in case we have
+ 	 * special handling for them, but we don't so just return an error.
+@@ -1907,6 +1920,34 @@ static const struct blk_mq_ops nbd_mq_ops = {
+ 	.timeout	= nbd_xmit_timeout,
+ };
+ 
++static ssize_t disconnect_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *page, size_t len)
++{
++	struct gendisk *disk = dev_to_disk(dev);
++	struct nbd_device *nbd = disk->private_data;
++	ssize_t ret = -ENOLINK;
++
++	mutex_lock(&nbd->config_lock);
++	if (nbd->config != NULL) {
++		ret = nbd_disconnect(nbd);
++		if (ret == 0) {
++			ret = len;
++		}
++	}
++	mutex_unlock(&nbd->config_lock);
++	return ret;
++}
++
++static DEVICE_ATTR_WO(disconnect);
++
++static struct attribute *dev_attrs[] = {
++	&dev_attr_disconnect.attr,
++	NULL,
++};
++
++ATTRIBUTE_GROUPS(dev);
++
+ static struct nbd_device *nbd_dev_add(int index, unsigned int refs)
+ {
+ 	struct queue_limits lim = {
+@@ -1984,7 +2025,7 @@ static struct nbd_device *nbd_dev_add(int index, unsigned int refs)
+ 	disk->fops = &nbd_fops;
+ 	disk->private_data = nbd;
+ 	sprintf(disk->disk_name, "nbd%d", index);
+-	err = add_disk(disk);
++	err = device_add_disk(NULL, disk, dev_groups);
+ 	if (err)
+ 		goto out_free_work;
+ 
