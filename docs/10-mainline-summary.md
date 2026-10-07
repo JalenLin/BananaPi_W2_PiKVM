@@ -225,7 +225,9 @@ Not done:
   SCSI timeout (30 s on Linux) takes keyboard and mouse down with it until
   the target enumerates the device again: kvmd-nbd waits up to an hour
   for the server, and the USB reset the target tries meanwhile finds the
-  gadget blocked in the read. As on PiKVM (`docs/09` §23).
+  gadget blocked in the read. kvmd itself keeps answering and keeps the
+  image, thanks to kvmd patch 0003; stock kvmd 4.224 stops answering until
+  the server is back (`docs/09` §23).
 
 Seen, not yet looked into:
 
@@ -335,7 +337,7 @@ cannot be unloaded.
 |---|---|
 | `scripts/build-rootfs-arch.sh`, `scripts/rootfs-arch.sh` | The Arch rootfs build |
 | `patches/ustreamer` | NV12/NV16 capture; single-planar M2M encoders (coda) |
-| `patches/kvmd` | Python 3.13 fix; one HID function for keyboard and mouse, MSD on mainline |
+| `patches/kvmd` | Python 3.13 fix; one HID function for keyboard and mouse, MSD on mainline; a remote image kept through an outage of its server |
 | `patches/janus` | PiKVM's `janus.js` change (used by the Debian line's own Janus build) |
 | `overlay/usr/lib/kvmd/main.yaml`, `overlay/usr/lib/kvmd/platform` | kvmd's platform configuration for this board |
 | `overlay/etc/kvmd/janus/janus.plugin.ustreamer.jcfg` | Janus: the H.264 sink and the `hdmirx` audio |

@@ -1,0 +1,60 @@
+From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+Subject: [PATCH] msd: nbd: keep the image while the remote is offline
+
+Since 4.221 (c4582da7, "drop image if both kvmd and kvmd-nbd were
+restarted") the drive is ejected on every change KVMD-NBD reports while a
+remote image is attached: the drive's file is then always the NBD device,
+last_known_path. That includes the remote going offline for a moment, which
+4.219 rode out. The eject is a write to the gadget's forced_eject from the
+event loop. When the host is in the middle of a read from the NBD device,
+f_mass_storage holds the LUN's lock in that read, which waits for the
+remote, so the write blocks and kvmd stops answering altogether (Web UI,
+API, HID) until the remote is back.
+
+Eject when the binding behind the drive is gone or no longer running, or
+when KVMD-NBD itself is unreachable, as 4.219 did; the restart case the
+change was for is still covered (the restarted KVMD-NBD has no running
+binding).
+
+Checked on a BPI-W2: with the server stopped during a read, kvmd kept
+answering and the image stayed attached; once the server was back the
+target read it again. Restarting kvmd-nbd, or kvmd-nbd and kvmd, still
+ejected it.
+---
+diff --git a/kvmd/plugins/msd/otg/__init__.py b/kvmd/plugins/msd/otg/__init__.py
+index 4c1eb474..02fc9a3f 100644
+--- a/kvmd/plugins/msd/otg/__init__.py
++++ b/kvmd/plugins/msd/otg/__init__.py
+@@ -555,13 +555,13 @@ class Plugin(BaseMsd):  # pylint: disable=too-many-instance-attributes
+             try:
+                 try:
+                     async for _ in self.__nbd.poll_for_changes():
+-                        self.__poke_drive_for_nbd()
++                        self.__poke_drive_for_nbd(False)
+                         if not ok:
+                             logger.info("NBD online")
+                             ok = True
+                 except Exception:
+                     if ok:
+-                        self.__poke_drive_for_nbd()
++                        self.__poke_drive_for_nbd(True)
+                     raise
+             except Exception as ex:
+                 if ok:
+@@ -572,9 +572,14 @@ class Plugin(BaseMsd):  # pylint: disable=too-many-instance-attributes
+                     ok = False
+                 await asyncio.sleep(1)
+ 
+-    def __poke_drive_for_nbd(self) -> None:
++    def __poke_drive_for_nbd(self, nbd_lost: bool) -> None:
++        # Eject only when the binding behind the drive is gone or stopped, or
++        # KVMD-NBD itself is: a change of the remote's online state alone
++        # must keep the image, or a short outage would take it from the host.
++        bound = (self.__drive.get_image_path() == self.__nbd.last_known_path)
++        running = bool(self.__nbd.image and self.__nbd.asserted_running)
+         if (
+-            self.__drive.get_image_path() == self.__nbd.last_known_path
++            (bound and (nbd_lost or not running))
+             or (self.__nbd.image and not self.__nbd.asserted_running)
+         ):
+             self.__drive.set_image_path("")

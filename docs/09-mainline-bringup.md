@@ -2713,7 +2713,8 @@ and it was sending 1920x1080 at 49.88 Hz, DVI, from an earlier EDID.
   does not answer the new configuration ("can't set config #1, error
   -110"). Keyboard and mouse go with it, until the target enumerates the
   device again. kvmd itself reports the outage (`online: false` with the
-  reason) and picks up again when the server returns.
+  reason) and picks up again when the server returns. With kvmd 4.224 as
+  it is, it was worse; see below.
 - **VNC showed "Waiting for stream" forever.** kvmd-vnc reads the JPEG
   frames from ustreamer's shared memory when `vnc.memsink.jpeg` is set,
   which PiKVM's platform configs do along with `--jpeg-sink`. Without it,
@@ -2729,7 +2730,33 @@ and it was sending 1920x1080 at 49.88 Hz, DVI, from an earlier EDID.
   copies the virtual drive's settings when the drive has no image, and
   took `cdrom` from `rw`. An ISO attached read-only came back as a flash
   drive on the next connect. Upstream fixed it in 4.223, so rather than
-  carry a patch for it, the image moved to kvmd 4.224 (below).
+  carry a patch for it, the image moved to kvmd 4.224.
+
+**kvmd 4.224.** Between 4.219 and 4.224:
+- the CD-ROM flag fix above;
+- NBD fixes: the timeout set on the kernel socket rather than its wrapper,
+  and the state after restarts;
+- `send_key` without a state releases modifiers and PrintScreen again
+  (pikvm/pikvm#1711). The test above had found them left pressed.
+Patches 0001 and 0002 apply as they are. Checked on the image: the CD-ROM
+flag survives disconnects, and every key of the HID test ends released.
+
+**Brought along: the image went with a remote outage** (patch 0003).
+Since 4.221 (`c4582da7`, "drop image if both kvmd and kvmd-nbd were
+restarted"), kvmd ejects the drive on every change KVMD-NBD reports while
+a remote image is attached, including the remote going offline for a
+moment. The eject writes the gadget's `forced_eject` from kvmd's event
+loop. With the target in the middle of a read, f_mass_storage holds the
+LUN's lock in that read, so the write blocked: kvmd sat in `D` state in
+`fsg_store_file`, and the Web UI, the API and HID stopped answering until
+the server came back. The image was gone after that. 0003 ejects only when
+the binding behind the drive is gone or stopped, or KVMD-NBD is
+unreachable, as 4.219 did. With it:
+- with the server stopped during a read, kvmd kept answering and the image
+  stayed attached;
+- with the server back, the target (re-enumerated) read it md5 equal;
+- restarting kvmd-nbd, or kvmd-nbd and kvmd, still ejected it, which is
+  what the upstream change was for.
 
 **Taken over from PiKVM's kernel** (`pikvm/packages`,
 `packages/linux-rpi-pikvm`), as patches 0019-0025. Of these, 1001, 1003,
