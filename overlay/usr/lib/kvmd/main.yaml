@@ -120,7 +120,7 @@ kvmd:
             - "--cpu-scaling-governor-active=performance"
             # The JPEG frames into shared memory too, as PiKVM's platform
             # configs do: kvmd-vnc reads them there. Without the sink it
-            # falls back to ustreamer's HTTP stream, and kvmd 4.219's client
+            # falls back to ustreamer's HTTP stream, and kvmd's client
             # for that breaks on aiohttp 3.13 ("StreamReader object attribute
             # 'read' is read-only"), so VNC never got a picture.
             - "--jpeg-sink=kvmd::ustreamer::jpeg"

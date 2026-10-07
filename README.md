@@ -277,5 +277,5 @@ here: u-boot's SPI image `spirom-bpi-w2.bin`, the audio CPU firmware
 fetched by `scripts/fetch-vpu-firmware.sh`.
 
 - Kernel: [BPI-SINOVOIP/BPI-W2-bsp](https://github.com/BPI-SINOVOIP/BPI-W2-bsp) (GPL-2.0); on `kernel-6.18` also [Linux stable](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git) (GPL-2.0) v6.18.55
-- [pikvm/kvmd](https://github.com/pikvm/kvmd) (GPL-3.0) v4.219 on `kernel-6.18` (v4.213 on `main`)
+- [pikvm/kvmd](https://github.com/pikvm/kvmd) (GPL-3.0) v4.224 on `kernel-6.18` (v4.213 on `main`)
 - [pikvm/ustreamer](https://github.com/pikvm/ustreamer) (GPL-3.0) v6.67 on `kernel-6.18` (v6.66 on `main`)

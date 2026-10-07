@@ -17,7 +17,7 @@ BSP_REF="master"
 LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 LINUX_REF="v6.18.55"
 KVMD_URL="https://github.com/pikvm/kvmd.git"
-KVMD_REF="v4.219"
+KVMD_REF="v4.224"
 USTREAMER_URL="https://github.com/pikvm/ustreamer.git"
 USTREAMER_REF="v6.67"
 # The WebRTC gateway kvmd-janus runs; Debian 13 does not package it. PiKVM
