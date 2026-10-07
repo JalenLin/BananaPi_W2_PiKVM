@@ -79,20 +79,33 @@ was then checked on its own, on 2026-10-05:
 - **Virtual media.** A 16 MiB image went through kvmd as a flash drive, and
   the Pi read it back md5 equal.
 
-**Release check, 2026-10-08** (`v2.1-kernel6.18`, built at `bae0cfa`: the
-fixes of `docs/09` §23). Both images were built from the tree and
-inspected:
+**Release check, 2026-10-08** (`v2.1-kernel6.18`, built at `f564790`:
+the fixes of `docs/09` §23, kvmd 4.224 with patch 0003). Both images were
+built from the tree and inspected:
 - no SSH host keys, TLS keys, pacman keyring or `authorized_keys`;
   certbot's own test data (`certbot/tests/testdata/*/privkey1.pem`) is the
   only private-key file;
 - `/run` holds empty directories only;
-- tesseract, the nbd modules-load file, kvmd-nbd enabled, the JPEG sink
-  and kvmd 4.224 are present.
+- tesseract, the nbd modules-load file, kvmd-nbd enabled, the JPEG sink,
+  kvmd 4.224 and its patch 0003 are present;
+- the motd names `f564790`.
+
+The same checks on both paths, from one script:
+- video with Kodi playing: MJPEG, H.264, WebRTC with audio;
+- OCR of Kodi's menu, Redfish, the web terminal;
+- the HID test, every key released at the end;
+- virtual media: upload, download by URL, flash drive, CD-ROM (the flag
+  kept over two reconnects), a remote (NBD) image, each read back md5
+  equal on the Pi;
+- the NBD server stopped during a read: kvmd answered throughout, the
+  image stayed, and read back once the server returned;
+- VNC (still disabled by default);
+- 1366x768, 1920x1080 at 49.88 Hz (DVI), 1080i50 and 576p50 at their rates.
 
 | Path | Verified by |
 |---|---|
-| SD card, the eMMC's u-boot (SW4 = 0, card in) | written from the eMMC system and read back, sha256 equal; first boot made its keys and grew `BPI-MSD` to 232 GB, no failed unit; MJPEG 22.7 fps, H.264 24.8 fps and WebRTC 30.1 fps with Kodi playing, HDMI audio; OCR read Kodi's menu; HID reports as before; upload (8 MB/s), download by URL, flash drive, CD-ROM and a remote (NBD) image read back md5 equal on the Pi; VNC; 1366x768, 1920x1200, 1920x1080 at 49.88 Hz (DVI), 720p and 1080i50 at their rates |
-| eMMC alone (`bpikvm-install-emmc` from that SD system; the card's boot files moved aside so the eMMC's u-boot fell through to the eMMC) | partitions and MBR read back sha256 equal; first boot grew root to 6.8 GiB, HS200, no failed unit; the same video, OCR, HID, virtual media (upload 16 MB/s) and VNC checks |
+| eMMC alone (`bpikvm-install-emmc` from the SD system; the card's boot files moved aside, so the eMMC's u-boot fell through to the eMMC) | partitions and MBR read back sha256 equal; first boot grew root to 6.8 GiB, no failed unit; MJPEG 24.2 fps, H.264 26.8 fps, WebRTC 30.1 fps; upload 14 MB/s; the checks above |
+| SD card, the eMMC's u-boot (SW4 = 0, card in) | written from that eMMC system and read back, sha256 equal; first boot made its keys and grew `BPI-MSD` to 232 GB, no failed unit; MJPEG 23.0 fps, H.264 21.8 fps, WebRTC 30.1 fps; upload 8.7 MB/s; the checks above |
 
 **Release check, 2026-10-04** (`kernel-6.18` @ `061531b`: Linux 6.18.55,
 kvmd 4.219, ustreamer 6.67, and the temperature, cpufreq/PMIC and CMA
