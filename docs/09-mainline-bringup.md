@@ -2717,7 +2717,7 @@ and it was sending 1920x1080 at 49.88 Hz, DVI, from an earlier EDID.
 - **VNC showed "Waiting for stream" forever.** kvmd-vnc reads the JPEG
   frames from ustreamer's shared memory when `vnc.memsink.jpeg` is set,
   which PiKVM's platform configs do along with `--jpeg-sink`. Without it,
-  kvmd 4.219 falls back to an HTTP client that patches
+  kvmd (4.219, and 4.224 still) falls back to an HTTP client that patches
   `StreamReader.read`, which aiohttp 3.13 no longer allows ("attribute
   'read' is read-only"). `main.yaml` now has both. Checked with an RFB
   client (VeNCrypt/Plain, Tight JPEG): 1920x1080 frames, and it follows
@@ -2728,7 +2728,8 @@ and it was sending 1920x1080 at 49.88 Hz, DVI, from an earlier EDID.
 - **kvmd 4.219 swapped the CD-ROM flag on disconnect.** `__update_vd()`
   copies the virtual drive's settings when the drive has no image, and
   took `cdrom` from `rw`. An ISO attached read-only came back as a flash
-  drive on the next connect. Fixed upstream later; patch 0003 here.
+  drive on the next connect. Upstream fixed it in 4.223, so rather than
+  carry a patch for it, the image moved to kvmd 4.224 (below).
 
 **Taken over from PiKVM's kernel** (`pikvm/packages`,
 `packages/linux-rpi-pikvm`), as patches 0019-0025. Of these, 1001, 1003,
