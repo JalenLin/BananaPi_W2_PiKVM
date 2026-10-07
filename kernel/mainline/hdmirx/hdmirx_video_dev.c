@@ -250,14 +250,74 @@ static int hdmirx_s_input(struct file *file, void *priv, unsigned int i)
 	return i ? -EINVAL : 0;
 }
 
+/*
+ * What the RX thread measured of the source when the signal came up
+ * (hdmirx_measure_rate()): the pixel clock, the time of a field, and the
+ * field's total lines and vsync lines. A VIC brings its own timings; a
+ * source without one has only these to go on.
+ */
+struct hdmirx_rate {
+	u64 pclk;
+	unsigned int field_ns;
+	unsigned int vtotal;
+	unsigned int vsync;
+};
+
+static DEFINE_MUTEX(rate_lock);
+static struct hdmirx_rate rate;
+
+void hdmirx_measure_rate(bool present)
+{
+	struct hdmirx_rate r = { 0 };
+	unsigned int mhz;
+
+	if (present) {
+		r.pclk = Hdmi_GetPixelClock();
+		r.field_ns = Hdmi_MeasureFieldNs();
+		r.vtotal = hdmirx_wrapper_get_vtotal(&r.vsync);
+		if (r.field_ns) {
+			mhz = (unsigned int)div_u64(1000000000000ULL, r.field_ns);
+			HDMIRX_INFO("pixel clock %llu Hz, field rate %u.%03u Hz, %u lines, vsync %u",
+				    r.pclk, mhz / 1000, mhz % 1000, r.vtotal, r.vsync);
+		} else {
+			HDMIRX_INFO("no vsync to time the field rate on");
+		}
+	}
+
+	mutex_lock(&rate_lock);
+	rate = r;
+	mutex_unlock(&rate_lock);
+}
+
+static struct hdmirx_rate get_rate(void)
+{
+	struct hdmirx_rate r;
+
+	mutex_lock(&rate_lock);
+	r = rate;
+	mutex_unlock(&rate_lock);
+	return r;
+}
+
 static unsigned int input_fps(void)
 {
 	unsigned int vic = hdmi_ioctl_struct.measure_ready ?
-		drvif_Hdmi_AVI_VIC() : 0;
-	unsigned int fps = hdmi_vic_table[vic].fps;
+		hdmirx_input_vic() : 0;
+	unsigned int fps, field_ns;
 
-	if (hdmi_vic_table[vic].interlace)
-		fps /= 2;
+	if (vic) {
+		fps = hdmi_vic_table[vic].fps;
+		if (hdmi_vic_table[vic].interlace)
+			fps /= 2;
+		return fps ? fps : 60;
+	}
+
+	field_ns = get_rate().field_ns;
+	if (!field_ns)
+		return 60;
+	if (!hdmi.tx_timing.progressive)
+		field_ns *= 2;
+	fps = DIV_ROUND_CLOSEST(NSEC_PER_SEC, field_ns);
 	return fps ? fps : 60;
 }
 
@@ -309,38 +369,153 @@ static int hdmirx_g_parm(struct file *file, void *priv,
 static const struct v4l2_dv_timings_cap hdmirx_timings_cap = {
 	.type = V4L2_DV_BT_656_1120,
 	.reserved = { 0 },
-	V4L2_INIT_BT_TIMINGS(640, MAX_WIDTH, 480, MAX_HEIGHT,
-			     25000000, 600000000,
+	V4L2_INIT_BT_TIMINGS(640, MAX_WIDTH, 240, MAX_HEIGHT,
+			     13000000, 600000000,
 			     V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT,
 			     V4L2_DV_BT_CAP_PROGRESSIVE |
 			     V4L2_DV_BT_CAP_INTERLACED)
 };
 
+/* The time of one field of these timings, in ns */
+static unsigned int bt_field_ns(const struct v4l2_bt_timings *bt)
+{
+	u64 pixels = (u64)V4L2_DV_BT_FRAME_WIDTH(bt) * V4L2_DV_BT_FRAME_HEIGHT(bt);
+
+	if (bt->interlaced)
+		pixels /= 2;
+	return (unsigned int)div64_u64(pixels * NSEC_PER_SEC, bt->pixelclock);
+}
+
+/*
+ * The DMT (or CEA) mode of this size, pixel clock and field rate, if there
+ * is one: its timings are exact. The pixel clock is measured in steps of
+ * 27 MHz / 256, hence the 250 kHz floor on the tolerance; the field rate
+ * tells apart modes with the same clock, such as 640x480 at 72 and 75 Hz.
+ */
+static bool find_preset_timings(struct v4l2_dv_timings *t, unsigned int w,
+				unsigned int h, bool interlaced, u64 pclk,
+				unsigned int field_ns)
+{
+	const struct v4l2_dv_timings *best = NULL;
+	u64 tol = max_t(u64, div_u64(pclk, 200), 250000);
+	u64 diff, best_diff = U64_MAX;
+	unsigned int i;
+
+	for (i = 0; v4l2_dv_timings_presets[i].bt.width; i++) {
+		const struct v4l2_bt_timings *bt = &v4l2_dv_timings_presets[i].bt;
+
+		if (bt->width != w || bt->height != h ||
+		    !!bt->interlaced != interlaced)
+			continue;
+		diff = abs_diff(bt->pixelclock, pclk);
+		if (diff > tol ||
+		    abs_diff(bt_field_ns(bt), field_ns) > field_ns / 100)
+			continue;
+		if (diff < best_diff) {
+			best = &v4l2_dv_timings_presets[i];
+			best_diff = diff;
+		}
+	}
+	if (!best)
+		return false;
+	*t = *best;
+	return true;
+}
+
+/*
+ * No such mode: build the timings from the measurements, so that the pixel
+ * clock and the field rate come out as measured, which is what a client
+ * such as ustreamer computes the frame rate from. The total lines and the
+ * vsync are measured; how the rest of the vertical blanking splits is not,
+ * nor anything horizontal but the total, which follows from the clock, the
+ * rate and the lines. The front porches and the hsync are CVT reduced
+ * blanking's. Should the line count not make sense, the vertical blanking
+ * is CVT-RB's too (at least 460 us).
+ */
+static void make_timings(struct v4l2_dv_timings *t, unsigned int w,
+			 unsigned int h, bool interlaced,
+			 const struct hdmirx_rate *r)
+{
+	struct v4l2_bt_timings *bt = &t->bt;
+	unsigned int lines = interlaced ? h / 2 : h;
+	unsigned int vblank = 0, vsync = 4, vtotal, htotal, hblank;
+
+	if (r->vsync && r->vtotal >= lines + 3 + r->vsync + 1 &&
+	    r->vtotal < lines * 2) {
+		vblank = r->vtotal - lines;
+		vsync = r->vsync;
+	} else {
+		if (r->field_ns > 460000)
+			vblank = DIV_ROUND_UP_ULL(460000ULL * lines, r->field_ns - 460000);
+		vblank = max(vblank, 8U);
+	}
+	vtotal = lines + vblank;
+	htotal = (unsigned int)div64_u64(r->pclk * r->field_ns + 500000000ULL * vtotal,
+					 1000000000ULL * vtotal);
+	hblank = htotal > w ? htotal - w : 0;
+
+	t->type = V4L2_DV_BT_656_1120;
+	bt->width = w;
+	bt->height = h;
+	bt->interlaced = interlaced;
+	bt->pixelclock = r->pclk;
+	if (hblank >= 160) {
+		bt->hfrontporch = 48;
+		bt->hsync = 32;
+	} else {
+		bt->hfrontporch = hblank * 48 / 160;
+		bt->hsync = hblank * 32 / 160;
+	}
+	bt->hbackporch = hblank - bt->hfrontporch - bt->hsync;
+	bt->vfrontporch = 3;
+	bt->vsync = vsync;
+	bt->vbackporch = vblank - 3 - vsync;
+	if (interlaced) {
+		bt->il_vfrontporch = bt->vfrontporch;
+		bt->il_vsync = bt->vsync;
+		bt->il_vbackporch = bt->vbackporch;
+	}
+}
+
 static int hdmirx_query_dv_timings(struct file *file, void *priv,
 				   struct v4l2_dv_timings *timings)
 {
-	struct v4l2_bt_timings *bt = &timings->bt;
+	struct hdmirx_rate r;
 	unsigned int vic, w, h;
+	bool interlaced;
 
 	if (!signal_present())
 		return -ENOLINK;
 
 	/*
-	 * A CEA VIC gives the full timings, blanking and pixel clock included.
-	 * Without one (DVI, or a mode outside CEA-861) only the active size and
-	 * the rate are known; fill in what there is.
+	 * A VIC gives the full timings, blanking and pixel clock included.
+	 * hdmi_vic_table puts the HDMI VICs 1-4 (4K over HDMI 1.4) after CEA's
+	 * 107; CEA-861-F gave the same modes VICs 95, 94, 93 and 98.
 	 */
-	vic = drvif_Hdmi_AVI_VIC();
+	vic = hdmirx_input_vic();
+	if (vic > 107) {
+		static const u8 hdmi_vic_to_cea[] = { 95, 94, 93, 98 };
+
+		vic = vic - 108 < ARRAY_SIZE(hdmi_vic_to_cea) ?
+			hdmi_vic_to_cea[vic - 108] : 0;
+	}
 	memset(timings, 0, sizeof(*timings));
 	if (vic && v4l2_find_dv_timings_cea861_vic(timings, vic))
 		return 0;
 
+	/*
+	 * Without one (DVI, or a mode outside CEA-861) the receiver knows the
+	 * active size, and the RX thread has timed the rest once the signal
+	 * came up; until it has, the timings are not known yet.
+	 */
+	r = get_rate();
+	if (!r.pclk || !r.field_ns)
+		return -ENOLCK;
+
 	input_size(&w, &h);
-	timings->type = V4L2_DV_BT_656_1120;
-	bt->width = w;
-	bt->height = h;
-	bt->interlaced = !hdmi.tx_timing.progressive;
-	bt->pixelclock = (u64)w * h * input_fps();
+	interlaced = !hdmi.tx_timing.progressive;
+	if (!find_preset_timings(timings, w, h, interlaced, r.pclk, r.field_ns))
+		make_timings(timings, w, h, interlaced, &r);
 	return 0;
 }
 

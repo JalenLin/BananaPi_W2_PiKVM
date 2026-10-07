@@ -9,6 +9,9 @@
  * (at your option) any later version.
  */
 
+#include <linux/ktime.h>
+#include <linux/math64.h>
+
 #include "hdmiInternal.h"
 
 /*=================== extern Variable/Function ===================*/
@@ -99,6 +102,57 @@ unsigned int Hdmi_GetVSyncCount(void)
 	}
 
 	return hdmi.vsync_cnt;
+}
+
+/*
+ * The time of one field in ns, timed on the vsync flag over a few fields; 0
+ * if the vsyncs stop. The receiver counts no horizontal totals (the "onms"
+ * measurement below only reads back the active size), so for a source
+ * without a VIC this and the pixel clock are what the rate comes from.
+ *
+ * Polling, as Hdmi_WaitVsync() does: the flag raises no interrupt. Run it
+ * from the RX thread, the flag's only other user (Hdmi_GetInterlace()), so
+ * the two do not clear each other's vsyncs.
+ *
+ * Not every vsync shows: polled every 50-100 us, some intervals came out as
+ * two or three fields (1366x768 at 60 Hz timed as 40 Hz), more often the
+ * shorter the vsync pulse. So the shortest interval stands for one field,
+ * and the whole span over the number of fields it holds gives the time.
+ */
+#define FIELD_MEASURE_EVENTS	10
+unsigned int Hdmi_MeasureFieldNs(void)
+{
+	ktime_t deadline = ktime_add_ms(ktime_get(), 600);
+	ktime_t t[FIELD_MEASURE_EVENTS], now;
+	u64 d, span, step = U64_MAX;
+	unsigned int n = 0, i, fields;
+
+	/* Write 1 to clear */
+	hdmi_rx_reg_mask32(TMDS_CTRL, ~TMDS_CTRL_yo_mask, TMDS_CTRL_yo(1), HDMI_RX_MAC);
+	while (n < FIELD_MEASURE_EVENTS) {
+		now = ktime_get();
+		if (TMDS_CTRL_get_yo(hdmi_rx_reg_read32(TMDS_CTRL, HDMI_RX_MAC))) {
+			hdmi_rx_reg_mask32(TMDS_CTRL, ~TMDS_CTRL_yo_mask, TMDS_CTRL_yo(1), HDMI_RX_MAC);
+			t[n++] = now;
+		}
+		if (ktime_after(now, deadline))
+			break;
+		usleep_range(50, 100);
+	}
+	if (n < 3)
+		return 0;
+
+	/* Nothing above 250 Hz: a shorter interval is not a field */
+	for (i = 1; i < n; i++) {
+		d = ktime_to_ns(ktime_sub(t[i], t[i - 1]));
+		if (d > 4000000 && d < step)
+			step = d;
+	}
+	if (step == U64_MAX)
+		return 0;
+	span = ktime_to_ns(ktime_sub(t[n - 1], t[0]));
+	fields = (unsigned int)DIV_ROUND_CLOSEST_ULL(span, step);
+	return fields ? (unsigned int)div_u64(span, fields) : 0;
 }
 
 bool Hdmi_GetInterlace(HDMI_MS_MODE_T mode)
@@ -193,6 +247,26 @@ char Hdmi_GetPixelDownSample(void)
 int Hdmi_GetColorDepth(void)
 {
 	return TMDS_DPC0_dpc_cd(hdmi_rx_reg_read32(TMDS_DPC0, HDMI_RX_MAC));
+}
+
+/*
+ * The pixel clock in Hz, from the TMDS clock measurement: hdmi.b counts the
+ * TMDS clock in units of 27 MHz / 256, the deep colour ratio takes it to
+ * the pixel rate, and pixel repetition divides that.
+ */
+u64 Hdmi_GetPixelClock(void)
+{
+	int cd = Hdmi_GetColorDepth();
+	u64 clk;
+
+	if (cd >= 0x04 && cd < 0x08)
+		cd = cd - 0x04;
+	else
+		cd = 0;
+
+	clk = 27000000ULL * (unsigned int)hdmi.b * dpll_ratio[cd].RatioM;
+	return div_u64(clk, 256 * dpll_ratio[cd].RatioN *
+		       ((Hdmi_GetPixelDownSample() & 0x0f) + 1));
 }
 
 HDMI_ERR_T Hdmi_MeasureActiveSpace(HDMI_TIMING_T *tx_timing, HDMI_TIMING_T *gen_timing)

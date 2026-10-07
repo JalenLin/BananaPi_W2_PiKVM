@@ -11,6 +11,7 @@
 #include "v4l2_hdmi_dev.h"
 
 int out_color_to_bpp(unsigned int output_color);
+void hdmirx_measure_rate(bool present);
 int register_video_device(struct v4l2_hdmi_dev *hdmi_dev);
 void unregister_video_device(struct v4l2_hdmi_dev *hdmi_dev);
 

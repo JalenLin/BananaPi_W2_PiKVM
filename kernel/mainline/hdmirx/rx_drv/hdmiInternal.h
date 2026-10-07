@@ -578,6 +578,8 @@ int Hdmi_CRC_check(void);
 unsigned char Hdmi_WaitVsync(int num);
 unsigned int Hdmi_GetVSyncCountInit(void);
 unsigned int Hdmi_GetVSyncCount(void);
+unsigned int Hdmi_MeasureFieldNs(void);
+u64 Hdmi_GetPixelClock(void);
 bool Hdmi_GetInterlace(HDMI_MS_MODE_T mode);
 HDMI_COLORIMETRY_T Hdmi_GetColorimetry(void);
 HDMI_ERR_T Hdmi_MeasureActiveSpace(HDMI_TIMING_T *tx_timing, HDMI_TIMING_T *gen_timing);

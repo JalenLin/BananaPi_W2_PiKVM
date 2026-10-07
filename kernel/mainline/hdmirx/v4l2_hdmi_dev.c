@@ -345,6 +345,8 @@ static void update_hdmirx_switch_state(struct v4l2_hdmi_dev *dev)
 	if (hdmi_ioctl_struct.measure_ready != dev->rx_video_state) {
 		dev->rx_video_state = hdmi_ioctl_struct.measure_ready;
 		HDMIRX_INFO("video state %d", dev->rx_video_state);
+		/* Before the event: a client queries the timings on it */
+		hdmirx_measure_rate(dev->rx_video_state);
 		hdmirx_source_changed(dev);
 	}
 

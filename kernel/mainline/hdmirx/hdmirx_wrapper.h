@@ -31,6 +31,8 @@ unsigned int hdmirx_wrapper_get_active_pixel(void);
 void set_hdmirx_wrapper_control_0(int fifo_stage, int fw_dma_en,
 	int polarity_set_en, int polarity_set, int yuv_fmt, int hdmirx_en);
 void restartHdmiRxWrapperDetection(void);
+unsigned int hdmirx_input_vic(void);
+unsigned int hdmirx_wrapper_get_vtotal(unsigned int *vsync);
 void hdmirx_wrapper_isr(void);
 void hdmi_related_wrapper_init(void);
 #endif/* __HDMIRX_WRAPPER_H__ */

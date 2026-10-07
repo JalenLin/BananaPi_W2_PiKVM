@@ -43,26 +43,18 @@ static void rxdetect_work_fun(struct work_struct *work)
 		set_hdmirx_wrapper_interrupt_en(0, 0, 1);
 }
 
-const unsigned int resolution_format[17][2] = {
-	{ 640,  480},
-	{ 720,  480},
-	{1280,  720},
-	{1920, 1080},
-	{1920,  540},
-	{ 720,  240},
-	{1440,  480},
-	{ 720,  576},
-	{ 720,  288},
-	{1440,  576},
-	{ 720,  400},
-	{ 800,  600},
-	{1024,  768},
-	{1280,  960},
-	{1280, 1024},
-	{3840, 2160},/* For HDMI 1.x 4Kp24/25/30, PacketByte4 VIC=0 */
-	{4096, 2160},/* For HDMI 1.x */
-};
-const unsigned int format_number = sizeof(resolution_format)/sizeof(resolution_format[0]);
+/*
+ * The VIC the input was accepted with: the AVI InfoFrame's when the active
+ * size agrees with it, else 0 (DVI, or a mode outside CEA-861). The AVI
+ * registers keep the last InfoFrame, so after a DVI source replaces an
+ * HDMI one they still hold the old VIC; ask this, not the registers.
+ */
+static unsigned int input_vic;
+
+unsigned int hdmirx_input_vic(void)
+{
+	return input_vic;
+}
 
 const HDMI_VIC_TABLE_T hdmi_vic_table[] = {
 	/* {width, height, fps, interlace} */
@@ -300,10 +292,33 @@ unsigned int hdmirx_wrapper_get_active_pixel(void)
 	return buf0;
 }
 
+/*
+ * The polarity detector's counts are lines: how long vsync is high, and how
+ * long it is low. Together they are the field's total lines, and the shorter
+ * one is the vsync pulse (seen as 795 + 3 = 798 for 1366x768 at 60 Hz).
+ */
+unsigned int hdmirx_wrapper_get_vtotal(unsigned int *vsync)
+{
+	unsigned int reg, hi, lo;
+
+	reg = hdmi_rx_reg_read32(HDMIRX_WRAPPER_MONITOR_0, HDMI_RX_HDMI_WRAPPER);
+	hi = HDMIRX_WRAPPER_MONITOR_0_get_polarity_h_cnt(reg);
+	lo = HDMIRX_WRAPPER_MONITOR_0_get_polarity_l_cnt(reg);
+	if (vsync)
+		*vsync = min(hi, lo);
+	return hi + lo;
+}
+
+/* The frame sizes a source without a VIC is accepted with */
+#define NOVIC_MIN_WIDTH		640
+#define NOVIC_MIN_HEIGHT	240
+#define NOVIC_MAX_WIDTH		4096
+#define NOVIC_MAX_HEIGHT	2160
+
 static inline unsigned int check_hdmirx_resolution_match(void)
 {
 	unsigned int active_pixel, active_line, height;
-	unsigned int i, vic;
+	unsigned int vic;
 	unsigned char color_fmt;
 
 	vic = 0;
@@ -314,35 +329,46 @@ static inline unsigned int check_hdmirx_resolution_match(void)
 	active_line = hdmirx_wrapper_get_active_line();
 	color_fmt = hdmirx_wrapper_convert_color_fmt(GET_HDMI_COLOR_SPACE());
 
-	if (hdmi_vic_table[vic].interlace)
-		height = active_line*2;
-	else
-		height = active_line;
+	if (vic) {
+		if (hdmi_vic_table[vic].interlace)
+			height = active_line*2;
+		else
+			height = active_line;
 
-	if ((active_pixel == hdmi_vic_table[vic].width) &&
-		(height == hdmi_vic_table[vic].height) && vic) {
+		if ((active_pixel == hdmi_vic_table[vic].width) &&
+			(height == hdmi_vic_table[vic].height)) {
 
-		mipi_top.h_input_len = active_pixel;
-		mipi_top.v_input_len = active_line;
-		mipi_top.input_color = color_fmt;
+			mipi_top.h_input_len = active_pixel;
+			mipi_top.v_input_len = active_line;
+			mipi_top.input_color = color_fmt;
+			input_vic = vic;
 
-		HDMIRX_INFO("Check resolution match => Width(%u) Height(%u) VIC(%u)",
-			active_pixel, height, vic);
-		return 1;
-	} else if (vic == 0) {
-		/* Support standard timings and DVI mode */
-		for (i = 0; i < format_number; i++) {
-			if ((active_pixel == resolution_format[i][0]) &&
-				(active_line == resolution_format[i][1])) {
+			HDMIRX_INFO("Check resolution match => Width(%u) Height(%u) VIC(%u)",
+				active_pixel, height, vic);
+			return 1;
+		}
+	} else {
+		/*
+		 * DVI, or a mode CEA-861 has no VIC for (the VESA ones, a
+		 * computer's custom modes). The BSP took only a list of 17
+		 * sizes here, so 1366x768, 1440x900, 1680x1050, 1920x1200 and
+		 * the like gave no picture. The wrapper and the MIPI DMA take
+		 * any size (the pitch is rounded up to 16 bytes); the bounds
+		 * are the driver's.
+		 */
+		height = hdmi.tx_timing.progressive ? active_line : active_line*2;
 
-				mipi_top.h_input_len = active_pixel;
-				mipi_top.v_input_len = active_line;
-				mipi_top.input_color = color_fmt;
+		if (active_pixel >= NOVIC_MIN_WIDTH && active_pixel <= NOVIC_MAX_WIDTH &&
+			height >= NOVIC_MIN_HEIGHT && height <= NOVIC_MAX_HEIGHT) {
 
-				HDMIRX_INFO("Check resolution match => Width(%u) Height(%u) DIV",
-					active_pixel, height);
-				return 1;
-			}
+			mipi_top.h_input_len = active_pixel;
+			mipi_top.v_input_len = active_line;
+			mipi_top.input_color = color_fmt;
+			input_vic = 0;
+
+			HDMIRX_INFO("Check resolution match => Width(%u) Height(%u) no VIC",
+				active_pixel, height);
+			return 1;
 		}
 	}
 
