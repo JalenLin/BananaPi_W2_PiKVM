@@ -12,7 +12,7 @@ compressed with xz, each with the commit it was built from and its SHA-256.
 
 | Release | Kernel | Files |
 |---|---|---|
-| `v2.0-kernel6.18` | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media, HDMI audio, the HDMI and mini DP outputs, eMMC boot. Built from the [`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18) branch; follow `docs/11-install-and-use.md` there | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+| `v2.1-kernel6.18` | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media (also by URL and from remote servers), HDMI audio, VNC, OCR, VESA and custom input modes, the HDMI and mini DP outputs, eMMC boot (`v2.0-kernel6.18` is the earlier release of the same line). Built from the [`kernel-6.18`](https://github.com/JalenLin/BananaPi_W2_PiKVM/tree/kernel-6.18) branch; follow `docs/11-install-and-use.md` there | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
 | `v1.1-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13: what this branch describes | `bpiw2-pikvm.img.xz` (SD card) |
 
 ```sh
