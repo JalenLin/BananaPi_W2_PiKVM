@@ -165,12 +165,21 @@ pacman --noconfirm -U "$PKG"/kvmd/kvmd-[0-9]*.pkg.tar.*
 # kvmd, so that its dependency on kvmd is already met by ours.
 retry pacman --noconfirm --needed -S kvmd-webterm
 
+# Text recognition in the Web UI (OCR), as on PiKVM OS, which installs these
+# itself: kvmd lists tesseract only as an optional dependency.
+retry pacman --noconfirm --needed -S tesseract tesseract-data-eng
+
 # What a kvmd-platform-* package would add besides main.yaml (which, with
 # the udev rules and the platform file, comes from overlay/)
 CFG=/usr/share/kvmd/configs.default
 install -DTm644 "$CFG/os/sysctl.conf" /usr/lib/sysctl.d/99-kvmd.conf
 install -DTm644 "$CFG/os/udev/common.rules" /usr/lib/udev/rules.d/99-kvmd-common.rules
 install -DTm440 "$CFG/os/sudoers/v2-hdmi" /etc/sudoers.d/99_kvmd
+# kvmd-nbd (remote images for the virtual media) needs nbd loaded: the udev
+# rule above links its /dev/nbd15 as /dev/kvmd-nbd. The platform package's
+# modules-load file is what loads it on PiKVM; nothing else would.
+mkdir -p /usr/lib/modules-load.d
+echo nbd > /usr/lib/modules-load.d/kvmd-nbd.conf
 
 # The build tools go again
 rm -f /usr/local/bin/gcc /usr/local/bin/cc
@@ -241,7 +250,8 @@ done
 done
 
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd sshd \
-    kvmd kvmd-pm kvmd-nginx kvmd-otg kvmd-media kvmd-janus kvmd-webterm bpikvm-firstboot \
+    kvmd kvmd-pm kvmd-nginx kvmd-otg kvmd-nbd kvmd-media kvmd-janus kvmd-webterm \
+    bpikvm-firstboot \
     bpikvm-emmc-bootsync.path
 
 # -- what must not be in an image -------------------------------------

@@ -118,6 +118,13 @@ kvmd:
             # lets the kvmd group write the governor.
             - "--cpu-scaling-governor-idle=schedutil"
             - "--cpu-scaling-governor-active=performance"
+            # The JPEG frames into shared memory too, as PiKVM's platform
+            # configs do: kvmd-vnc reads them there. Without the sink it
+            # falls back to ustreamer's HTTP stream, and kvmd 4.219's client
+            # for that breaks on aiohttp 3.13 ("StreamReader object attribute
+            # 'read' is read-only"), so VNC never got a picture.
+            - "--jpeg-sink=kvmd::ustreamer::jpeg"
+            - "--jpeg-sink-mode=0660"
             # H.264 from VE1, the CODA980, through the mainline coda driver
             # (docs/09-mainline-bringup.md, section 11). Captured frames go to
             # it as DMA-BUFs. The BSP 4.9 kernel has no such device; its
@@ -151,5 +158,14 @@ otg:
 # Janus's ustreamer plugin (WebRTC), as on PiKVM V4.
 media:
     memsink:
+        h264:
+            sink: "kvmd::ustreamer::h264"
+
+# Readers of both sinks for kvmd-vnc, as in PiKVM's platform configs. The
+# service itself is off by default, as on PiKVM OS.
+vnc:
+    memsink:
+        jpeg:
+            sink: "kvmd::ustreamer::jpeg"
         h264:
             sink: "kvmd::ustreamer::h264"
