@@ -202,7 +202,32 @@ converter chip (checked with an ATEN VC920, mini DP to VGA). Passive mini
 DP to HDMI adapters (most cheap ones, e.g. ATEN VC980) cannot work on this
 board: it has no DP++ dual mode.
 
-## 8. What is not there
+## 8. Using it
+
+The Web UI works as on any PiKVM. What is particular to this board:
+
+- **Video.** The input takes what the EDID offers (1080p at 60, 50, 30
+  and 24 Hz, 1080i, 720p, 576p, 480p, and the VGA modes), and any other
+  size up to 4096x2160 a computer sends (1366x768, 1440x900, 1920x1200,
+  ...). H.264 (the WebRTC and Direct H.264 modes) goes up to 1920x1088;
+  above that, use MJPEG.
+- **Keyboard and mouse** are one USB device, so that virtual media fits
+  the board's USB endpoints. In the target's firmware setup (BIOS/UEFI)
+  the keyboard may not work, as it cannot offer the boot protocol; to
+  trade virtual media for that, see `docs/09` §10. The mouse is absolute
+  only.
+- **Virtual media.** Besides uploading, an image can be downloaded into
+  the store from a URL, or attached straight from an HTTP, SMB or SFTP
+  server without copying it (Virtual Media, remote image). Such a server
+  should stay up while the target reads: if it goes away for longer than
+  the target's USB timeout, keyboard and mouse stop too, until the
+  target's USB is reset (replug, or reboot it).
+- **VNC** is off, as on PiKVM OS: `systemctl enable --now kvmd-vnc`, port
+  5900, the Web UI's users and passwords (VeNCrypt).
+- **Text recognition (OCR)** of the screen is in the Web UI's menu, in
+  English.
+
+## 9. What is not there
 
 ATX power control is prepared but off (`10-mainline-summary.md` §7). Not
 there: the second Ethernet port, and audio

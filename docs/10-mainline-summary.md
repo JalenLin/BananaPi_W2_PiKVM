@@ -139,14 +139,18 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Reboot | done | watchdog restart handler | §9 |
 | USB host ports | done | hub and a card reader enumerate | §7 |
 | USB OTG (Type-C) | done | the target enumerates keyboard, mouse and mass storage | §7, §10 |
-| HDMI capture | done | 1080p60 from the receiver, EDID over DDC, NV12; after either u-boot (§4 of this file) | §10 |
+| HDMI capture | done | 1080p60 from the receiver, EDID over DDC, NV12; after either u-boot (§4 of this file). Every CEA mode the EDID lists (1080p 60/50/30/24, 1080i, 720p, 576p, 480p), and any size without a VIC up to 4096x2160 (1366x768, 1440x900, 1680x1050, 1920x1200, ...), with the rate measured | §10, `docs/09` §23 |
 | MJPEG stream | done | kvmd's ustreamer, ~22 fps of JPEG to a client | §10 |
-| H.264 encoding (VE1) | done | CODA980 through the mainline `coda` driver, 1080p, ~70 fps capacity. Its buffers and the capture buffers come from pools of their own, not CMA: with the SD card busy a CMA allocation once failed and H.264 stayed off for the session. 20 restarts under page-cache pressure, all fine | §11, `docs/09` §22 |
+| H.264 encoding (VE1) | done | CODA980 through the mainline `coda` driver, up to 1920x1088 (larger sizes stream as MJPEG only), ~70 fps capacity. Its buffers and the capture buffers come from pools of their own, not CMA: with the SD card busy a CMA allocation once failed and H.264 stayed off for the session. 20 restarts under page-cache pressure, all fine | §11, `docs/09` §22 |
 | Direct H.264 (kvmd-media) | done | the Web UI's H.264 mode | §11 |
 | WebRTC (Janus) | done | 1920x1080 at ~30 fps to a headless WebRTC client | §11 |
 | HDMI audio | done | ALSA card `hdmirx`, 48 kHz stereo; music from Kodi over WebRTC (Opus) | §13 |
 | Keyboard, mouse | done | through kvmd to the target | §10 |
 | Virtual media (MSD) | done | image upload and connect through kvmd. Under load (network + eMMC + SD + H.264 + HID), a Pi 3 host read 45 GiB and wrote 1.5 GiB raw, every MiB checked, no error and no bus reset. That needs the SB2 drain on every `writel()`: without it the host gave up on a READ within minutes | §10, `docs/09` §21 |
+| Remote images (NBD) | done | an image on an HTTP/SMB/SFTP server attached without copying it, through kvmd-nbd; needs PiKVM's nbd patch (0025) | `docs/09` §23 |
+| Images by URL | done | kvmd downloads an image into the store | `docs/09` §23 |
+| VNC | done, off by default | `kvmd-vnc` from ustreamer's JPEG sink; `systemctl enable --now kvmd-vnc` | `docs/09` §23 |
+| OCR | done | tesseract with English, as on PiKVM OS | `docs/09` §23 |
 | Web terminal | done | `kvmd-webterm` (ttyd) in the Web UI | §12 |
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz, at the BSP's voltages from 1.2 GHz up and at 1.0 V below (a reset button or watchdog reset keeps the PMIC's voltage, and the boot ROM hangs on the BSP's 0.8 V), the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
@@ -189,6 +193,24 @@ Not done:
   That PHY is the one `eth0` uses, so a driver for the second port must
   not do that step. A USB 3.0 Ethernet adapter works meanwhile: the image
   has `r8152` and `ax88179_178a`.
+
+- **Typing in the target's firmware setup** may not work: keyboard and
+  mouse are one HID function with Report IDs (so that virtual media fits
+  the endpoints), and such a device cannot be a boot-protocol keyboard,
+  which is all much BIOS/UEFI setup firmware understands. The OS is
+  unaffected. `main.yaml` has the override back to a separate boot
+  keyboard and mouse without virtual media (`docs/09` §10). Not testable
+  here: the Pi has no firmware setup.
+- **Remote wakeup** (a key press waking a suspended target): the kernel
+  side is in (patch 0020) and kvmd turns it on, but it is untested; the
+  Pi cannot suspend.
+- **H.264 above 1920x1088**: the CODA980 does not go further. Such
+  sources (1920x1200, 2560x1440, 4K) stream as MJPEG only.
+- **A remote image whose server goes away** for longer than the target's
+  SCSI timeout (30 s on Linux) takes keyboard and mouse down with it until
+  the target enumerates the device again: kvmd-nbd waits up to an hour
+  for the server, and the USB reset the target tries meanwhile finds the
+  gadget blocked in the read. As on PiKVM (`docs/09` §23).
 
 Seen, not yet looked into:
 
@@ -277,6 +299,9 @@ cannot be unloaded.
 | 0015 | The thermal sensor |
 | 0016 | The CPU clock |
 | 0017 | The G2227 PMIC (CPU and L2 rails) |
+| 0018 | `wmb()` drains the SB2 bridge on RTD129x |
+| 0019-0024 | PiKVM's USB gadget patches: HID remote wakeup and a SET_REPORT fix, mass storage inquiry strings and DVD-ROM, no interface strings (`docs/09` §23) |
+| 0025 | PiKVM's nbd patch: no CAP_SYS_ADMIN for kvmd-nbd |
 
 ### Out-of-tree files (`kernel/mainline`), copied in at build time
 
@@ -295,7 +320,7 @@ cannot be unloaded.
 |---|---|
 | `scripts/build-rootfs-arch.sh`, `scripts/rootfs-arch.sh` | The Arch rootfs build |
 | `patches/ustreamer` | NV12/NV16 capture; single-planar M2M encoders (coda) |
-| `patches/kvmd` | Python 3.13 fix; one HID function for keyboard and mouse, MSD on mainline |
+| `patches/kvmd` | Python 3.13 fix; one HID function for keyboard and mouse, MSD on mainline; the CD-ROM flag kept across a disconnect |
 | `patches/janus` | PiKVM's `janus.js` change (used by the Debian line's own Janus build) |
 | `overlay/usr/lib/kvmd/main.yaml`, `overlay/usr/lib/kvmd/platform` | kvmd's platform configuration for this board |
 | `overlay/etc/kvmd/janus/janus.plugin.ustreamer.jcfg` | Janus: the H.264 sink and the `hdmirx` audio |

@@ -2631,7 +2631,144 @@ seconds. With the same writes and fsyncs but no `drop_caches`, the sender
 was never 0.5 s late in 16 minutes. That held under mq-deadline and bfq,
 with dirty_ratio 20 % and with dirty_bytes 32 MiB. So nothing to change.
 
-## 23. Sources
+## 23. Every PiKVM feature, checked (2026-10-08)
+
+A pass over everything PiKVM does, on the eMMC system of the `v2.0`
+release (`c371e00`), with the Pi 3 (LibreELEC 12.2.1) as source and
+target. What the target received was read on the Pi itself: keyboard and
+mouse from `/dev/hidraw0` (Kodi grabs the evdev nodes), virtual media
+with `dd | md5sum`. The source modes came from `modetest` with Kodi
+stopped, run under `systemd-run` (a plain background `modetest` dies with
+the ssh session, and the mode with it). Kodi's own mode list had gone
+stale: it held DRM master, so a probe from anything else was read-only,
+and it was sending 1920x1080 at 49.88 Hz, DVI, from an earlier EDID.
+
+**Worked as it was:**
+
+| Area | Checked |
+|---|---|
+| CEA modes | 1080p 60/50/30/24, 1080i 60/50, 720p60, 576p50, 480p60: size and rate right, `captured_fps` equal to the source; 1080i woven (the snapshot is byte for byte the 1080p one) |
+| Streams, Kodi playing a 1080p video | MJPEG 22 fps, H.264 through kvmd-media 25 fps at 2.9 Mbit/s, WebRTC 1920x1080 at 31.7 fps with Opus audio; `arecord` peaks at -12.5 dBFS |
+| Keyboard | 40 keys, Ctrl+Alt+Del and Shift+B as shortcuts, `print` of "Hi! 9@x": every usage code and modifier as expected; Caps Lock LED back to kvmd; `/api/hid/reset` releases everything |
+| Mouse | absolute 0 / centre / 32767, five buttons, wheel and horizontal wheel; the jiggler (+-50 around the last position) |
+| Virtual media | upload 64 MiB (11.4 MB/s from a PC), download by URL from the LAN and from the internet (netboot.xyz.iso), flash and CD-ROM mode (ISO9660 mounts), read-write: the Pi's 1 MiB write landed at exactly its offset |
+| The rest | auth (401 without, 403 wrong password, form login and cookie), HTTP to HTTPS, web terminal, Redfish, Prometheus, streamer parameters, log, ATX/GPIO state |
+
+**Not working, and fixed:**
+
+- **Sizes outside the BSP's list gave no picture.** For a source without
+  a VIC (DVI, the VESA modes, a computer's own), the receiver driver took
+  only 17 sizes. 1366x768, 1440x900, 1680x1050, 1920x1200 failed with
+  "Check resolution not match". The wrapper and the MIPI DMA take any size
+  (the pitch is rounded up to 16 bytes), so the check now takes any size
+  up to 4096x2160.
+- **Without a VIC, the DV timings were invented.** The pixel clock was
+  width x height x 60 and the rate always 60: Kodi's 49.88 Hz came out
+  as 60. The receiver measures no horizontal totals (Realtek's
+  `hdmi_onms_measure()` sets `h_total = h_act_len`). What it does have:
+  - the TMDS clock (`hdmi.b`, in steps of 27 MHz / 256), which gives the
+    pixel clock;
+  - the wrapper's polarity detector (`MONITOR_0`), whose high and low
+    counts are lines: their sum is the total, the shorter one the vsync
+    (795 + 3 = 798 for 1366x768);
+  - a vsync flag (`TMDS_CTRL.yo`, write 1 to clear) to time fields on.
+
+  Polled every 50-100 us, the flag missed vsyncs, more often the shorter
+  the pulse: 1366x768 at 60 Hz timed as 40 Hz, 1280x1024 as 34. A tight
+  loop from userspace saw it set every 16.666 ms, except the interval
+  just after a clear, which came out as two fields. So the shortest
+  interval stands for one field, and the whole span divided by the number
+  of fields in it gives the time. The RX thread measures this once the
+  signal is up, before it sends the source-change event, and it is the
+  flag's only other user. `QUERY_DV_TIMINGS` then gives:
+  - a DMT or CEA preset of that size whose clock is within 0.5 % (at least
+    250 kHz) and rate within 1 %, exact;
+  - otherwise timings built from the measurements: total lines and vsync
+    as counted, the horizontal total from clock, rate and lines.
+    `-ENOLCK` until the measurement is there.
+
+  Result: 1366x768, 1440x900, 1680x1050, 1920x1200, 1024x768 and
+  1280x1024 matched their DMT presets. Kodi's 1920x1080 at 49.88 Hz, a
+  1600x900 and a 1280x800 at 30 Hz (no presets) came out at 50.00, 59.99
+  and 30.01 Hz. On CEA modes the measured rate is within 0.03 %. The
+  VICs 108-111 (HDMI's 4K VICs 1-4) used to be looked up as CEA VICs
+  108-111, which are other modes; they map to 95, 94, 93 and 98 now.
+- **No H.264 above 1920x1088.** At 1920x1200 ustreamer asks coda for a
+  level the CODA980 does not have, and its encoder stops ("Can't set
+  option V4L2_CID_MPEG_VIDEO_H264_LEVEL: Numerical result out of range").
+  The CODA980 tops out at 1920x1088 in any case. MJPEG carries such
+  sizes. This is the same limit PiKVM's own boards have.
+- **NBD (remote images) could not start.** Mainline's `nbd` wants
+  CAP_SYS_ADMIN for its ioctls, which kvmd-nbd (a plain user) lacks:
+  `NBD_SET_BLKSIZE ... Operation not permitted`. PiKVM's kernel drops that
+  check (`1401-pikvm-nbd-fine-tuning.patch`), which is now patch 0025.
+  Also missing: the `nbd` module was never loaded (PiKVM's platform
+  package has it in modules-load), and kvmd-nbd was not enabled. Checked:
+  a 48 MiB image and an ISO over HTTP, as a flash drive and as a CD-ROM,
+  md5 equal on the Pi; unbind clean.
+- **What happens when the server goes away**, as on any PiKVM: kvmd-nbd
+  sets the device timeout to an hour and keeps retrying, so a short
+  outage costs nothing. A long one stalls the target's read. After 30 s
+  its SCSI layer resets the USB device, and the gadget, busy in that read,
+  does not answer the new configuration ("can't set config #1, error
+  -110"). Keyboard and mouse go with it, until the target enumerates the
+  device again. kvmd itself reports the outage (`online: false` with the
+  reason) and picks up again when the server returns.
+- **VNC showed "Waiting for stream" forever.** kvmd-vnc reads the JPEG
+  frames from ustreamer's shared memory when `vnc.memsink.jpeg` is set,
+  which PiKVM's platform configs do along with `--jpeg-sink`. Without it,
+  kvmd 4.219 falls back to an HTTP client that patches
+  `StreamReader.read`, which aiohttp 3.13 no longer allows ("attribute
+  'read' is read-only"). `main.yaml` now has both. Checked with an RFB
+  client (VeNCrypt/Plain, Tight JPEG): 1920x1080 frames, and it follows
+  the source's size. kvmd-vnc stays off by default, as on PiKVM OS.
+- **OCR had nothing to work with**: tesseract is only an optional
+  dependency of kvmd. PiKVM OS installs `tesseract` and
+  `tesseract-data-eng`, so the image now does too.
+- **kvmd 4.219 swapped the CD-ROM flag on disconnect.** `__update_vd()`
+  copies the virtual drive's settings when the drive has no image, and
+  took `cdrom` from `rw`. An ISO attached read-only came back as a flash
+  drive on the next connect. Fixed upstream later; patch 0003 here.
+
+**Taken over from PiKVM's kernel** (`pikvm/packages`,
+`packages/linux-rpi-pikvm`), as patches 0019-0025. Of these, 1001, 1003,
+1101-1103 and 1401 apply to 6.18 as they are:
+
+| Patch | PiKVM's | What it gives here |
+|---|---|---|
+| 0019 | 1001 | f_hid drops a stale SET_REPORT buffer when disabled |
+| 0020 | 1002 | `wakeup_on_write`: a key press wakes a sleeping target (kvmd sets it with `otg.remote_wakeup`, on by default) |
+| 0021, 0024 | 1003, 1103 | HID and mass storage without interface strings, as PiKVM presents them |
+| 0022 | 1101 | separate inquiry strings: "Optical Drive" as a CD-ROM, "Flash Drive" otherwise (kvmd writes both) |
+| 0023 | 1102 | images too big for a CD answer as a DVD-ROM (MMC profile, capabilities page): Windows' installer ISOs |
+| 0025 | 1401 | nbd: no CAP_SYS_ADMIN, read-only from the flags, a `disconnect` file in sysfs |
+
+0020 is ported: the dwc2 half is left out (this OTG port is dwc3), the
+attribute list took 6.18's new `interval` as context, and the wakeup is
+only asked while the gadget is suspended. dwc3 logs "not armed for remote
+wakeup" for each request the host has not armed, and hosts arm it only on
+their way into suspend, so asking on every write would log an error per
+report. Not tested: the Pi cannot suspend.
+
+With the new kernel: a 1.2 GB image as a CD-ROM was read whole by the Pi
+(md5 equal, 33 MB/s; the drive comes up as `scsi3-mmc ... cd/rw`). The
+same image as a flash drive was a removable disk, "Flash Drive". The HID
+reports were the same as before, code for code.
+
+**Not tested, and why:**
+- ATX: no ATX board. IPMI: off by default on PiKVM, and nothing to switch.
+- Audio towards the target, the webcam, USB networking: endpoints (§1 of
+  `10-mainline-summary.md`).
+- The firmware-setup keyboard: the Pi has none (§10, the boot-protocol
+  trade-off).
+- Remote wakeup: as above.
+
+The MSD upload rate over the network (11.4 MB/s) is the board's limit, not
+the network's: raw TCP from the same PC ran at 112.5 MB/s. On the board,
+kvmd took a local upload at 19-21 MB/s and `dd` wrote the store at
+24 MB/s. The network, nginx/TLS and kvmd share four A53 cores.
+
+## 24. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -2664,3 +2801,5 @@ with dirty_ratio 20 % and with dirty_bytes 32 MiB. So nothing to change.
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/mmc/host/rtkemmc.c` `phase()`, `rtkemmc_phase_tuning()`, `search_best()` | The PLL phases, how they change, the three tuning scans; the 512-byte DMA minimum (§19) |
 | `vendor/bpi-w2-bsp/u-boot-rtk/common/cmd_boot.c`, `arch/arm/include/asm/arch-rtd1295/fw_info.h` | `do_go_audio_fw()`, the firmware table format (§14) |
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/crt_reg.h`, `rtk_dptx/dptx_hwapi.c` | `PLL_HDMI`, `PLL_VODMA` fields; how the DP driver prepares the HDMI PLL (§14) |
+| `pikvm/packages` `packages/linux-rpi-pikvm/1001`-`1401` | PiKVM's kernel patches: HID, mass storage, nbd (§23) |
+| `pikvm/os` `stages/arch/pikvm/Dockerfile.part` | What PiKVM OS installs and enables: tesseract, kvmd-nbd (§23) |
