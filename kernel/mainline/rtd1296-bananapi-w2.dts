@@ -378,6 +378,11 @@
 		i2c0_pins: i2c0-pins {
 			pinctrl-single,bits = <0x0 0x01400000 0x03c00000>;
 		};
+
+		/* i2c_scl_1 bits 13:12, i2c_sda_1 bits 15:14 of MUXPAD1, function 1 */
+		i2c1_pins: i2c1-pins {
+			pinctrl-single,bits = <0x4 0x00005000 0x0000f000>;
+		};
 	};
 
 	/*
@@ -437,6 +442,26 @@
 				};
 			};
 		};
+	};
+
+	/*
+	 * The HDMI output's DDC (the BSP's i2c_1, "i2c-num 1", which its
+	 * hdmitx reads the monitor's EDID through). The same DesignWare
+	 * block as i2c0.
+	 */
+	i2c1: i2c@c00 {
+		compatible = "snps,designware-i2c";
+		reg = <0xc00 0x100>;
+		interrupt-parent = <&iso_irq_mux>;
+		interrupts = <11>;
+		clocks = <&osc27M>, <&iso_clk 10>;
+		clock-names = "ref", "pclk";
+		resets = <&iso_reset RTD1295_ISO_RSTN_I2C_1>;
+		clock-frequency = <100000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c1_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 	};
 };
 
@@ -626,6 +651,19 @@
 		rgmii-tx-delay = <0>;
 		rgmii-rx-delay = <0>;
 		ext-phy-id = <1>;
+	};
+
+	/*
+	 * The HDMI output's transmitter. The audio firmware drives it; this
+	 * node only tells rtd129x-vo (kernel/mainline/acpu/acpu-vo.c) where
+	 * the monitor's EDID is read and where its HPD line is (ISO GPIO 6).
+	 * Not mapped.
+	 */
+	hdmitx: hdmi@d000 {
+		compatible = "realtek,rtd1295-hdmitx";
+		reg = <0xd000 0x560>;
+		ddc-i2c-bus = <&i2c1>;
+		realtek,iso = <&iso>;
 	};
 
 	/*

@@ -104,7 +104,8 @@ struct rpc_hdr {
 /* ...and the address it gets back is in KSEG0 */
 #define REMOTE_KSEG0		0x80000000
 
-#define CALL_TIMEOUT		msecs_to_jiffies(1000)
+/* the BSP's; a TV system change takes the firmware a while */
+#define CALL_TIMEOUT		msecs_to_jiffies(5000)
 
 /*
  * The debug flag, in bluecore.audio "Audio Version = 166265 (Kylin)",

@@ -28,7 +28,7 @@ config RTD129X_VO
 	select DRM_KMS_HELPER
 	help
 	  The RTD1295/RTD1296 video output, which the audio firmware runs,
-	  as a DRM device with one plane, at the mode the boot loader set
-	  (1080p60 on the BPI-W2). Gives a console on HDMI through DRM's
-	  fbdev emulation; the DisplayPort output, when something is
-	  plugged into it, shows the same.
+	  as a DRM device with one plane, in the CEA-861 modes from 480p to
+	  1080p that the monitor's EDID offers. Gives a console on HDMI
+	  through DRM's fbdev emulation; the DisplayPort output, when
+	  something is plugged into it, shows the same.

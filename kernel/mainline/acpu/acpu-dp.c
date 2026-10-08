@@ -14,6 +14,11 @@
  * the BSP's own state machine, with the BSP's limits.
  *
  * Hot plug: the HPD line is ISO GPIO 7, which is polled.
+ *
+ * The transmitter's clocks (TVE, LVDS) are on only while a sink is: the
+ * firmware reads the LVDS timing generator whenever its clock is on, and
+ * without the pixel PLL behind it that read is an invalid access, which
+ * the firmware takes as fatal (in VO_SetVideoStandard, on a mode change).
  */
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -326,6 +331,31 @@ static int dp_link_train(struct vo_dp *dp)
 }
 
 /* dptx_close_phy(), dptx_close_pll() */
+/* The transmitter's clocks and resets, which the BSP leaves to rtk_dptx */
+static int dp_power_on(struct vo_dp *dp)
+{
+	int ret;
+
+	ret = clk_prepare_enable(dp->clk_tve);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(dp->clk_lvds);
+	if (ret) {
+		clk_disable_unprepare(dp->clk_tve);
+		return ret;
+	}
+	reset_control_deassert(dp->rst_tve);
+	reset_control_deassert(dp->rst_lvds);
+	return 0;
+}
+
+static void dp_power_off(struct vo_dp *dp)
+{
+	reset_control_assert(dp->rst_lvds);
+	clk_disable_unprepare(dp->clk_lvds);
+	clk_disable_unprepare(dp->clk_tve);
+}
+
 static void dp_off(struct vo_dp *dp)
 {
 	writel(1, dp->base + DP_PHY_CTRL);
@@ -490,6 +520,14 @@ static int dp_enable(struct vo_dp *dp)
 	u8 tv[VO_TV_SYSTEM_SIZE];
 	int ret, tries;
 
+	/* the transmitter is set up for 1080p60 only */
+	if (!vo_hdmi_1080p60(vo)) {
+		dev_info(vo->dev, "DP needs HDMI at 1080p60\n");
+		return -EINVAL;
+	}
+	ret = dp_power_on(dp);
+	if (ret)
+		return ret;
 	dp_hw_init(dp);
 	dp_set_1080p(dp);
 	for (tries = 0; tries < 3; tries++) {
@@ -500,13 +538,13 @@ static int dp_enable(struct vo_dp *dp)
 	}
 	if (ret) {
 		dev_err(vo->dev, "DP link training failed: %d\n", ret);
-		return ret;
+		goto err;
 	}
 
 	/* the TV system the firmware runs, with DP added to it */
 	ret = vo_query_tv_system(vo, tv);
 	if (ret)
-		return ret;
+		goto err;
 	dev_dbg(vo->dev, "TV system %*ph\n", VO_TV_SYSTEM_SIZE, tv);
 	*(__be32 *)(tv + VO_TV_INTERFACE_TYPE) =
 		cpu_to_be32(VO_INTERFACE_HDMI_AND_DP_SAME_SOURCE);
@@ -514,9 +552,14 @@ static int dp_enable(struct vo_dp *dp)
 		cpu_to_be32(VO_STANDARD_DP_FORMAT_1920_1080P_60);
 	ret = vo_config_tv_system(vo, tv);
 	if (ret)
-		return ret;
+		goto err;
 	dev_info(vo->dev, "DisplayPort on, 1920x1080, %u lanes\n", DP_LANES);
 	return 0;
+
+err:
+	dp_off(dp);
+	dp_power_off(dp);
+	return ret;
 }
 
 static bool dp_hpd(struct vo_dp *dp)
@@ -539,6 +582,7 @@ static void dp_hpd_work(struct work_struct *work)
 		dev_info(dp->vo->dev, "DP %s\n", hpd ? "connected" : "disconnected");
 		if (!hpd && dp->on) {
 			dp_off(dp);
+			dp_power_off(dp);
 			dp->on = false;
 		}
 		if (hpd)
@@ -595,14 +639,11 @@ int vo_dp_init(struct rtd_vo *vo)
 		ret = -ENODEV;
 		goto err_map;
 	}
-	ret = clk_prepare_enable(dp->clk_tve);
-	if (ret)
-		goto err_map;
+	/* the LVDS clock off until a sink is there, whoever opened it */
 	ret = clk_prepare_enable(dp->clk_lvds);
 	if (ret)
-		goto err_tve;
-	reset_control_deassert(dp->rst_tve);
-	reset_control_deassert(dp->rst_lvds);
+		goto err_map;
+	clk_disable_unprepare(dp->clk_lvds);
 
 	dp->aux.name = "rtd129x-dp";
 	dp->aux.dev = vo->dev;
@@ -615,8 +656,6 @@ int vo_dp_init(struct rtd_vo *vo)
 	schedule_delayed_work(&dp->hpd_work, 0);
 	return 0;
 
-err_tve:
-	clk_disable_unprepare(dp->clk_tve);
 err_map:
 	if (dp->base)
 		iounmap(dp->base);
@@ -627,6 +666,11 @@ err_map:
 err_np:
 	of_node_put(np);
 	return ret;
+}
+
+bool vo_dp_on(struct rtd_vo *vo)
+{
+	return vo->dp && vo->dp->on;
 }
 
 void vo_dp_fini(struct rtd_vo *vo)
