@@ -183,7 +183,7 @@ system reads at 29.7 MB/s (4-bit, 50 MHz).
 | Temperature | done | own driver for the sensor next to the CPUs, `thermal_zone0` (and hwmon `cpu_thermal`); kvmd shows it in the Web UI. Throttles the CPUs from 105 C, shuts down at 130 C | `docs/09` §15 |
 | CPU frequency and voltage | done | own drivers for the CPU PLL and the G2227 PMIC; `cpufreq-dt` with schedutil, 300 MHz - 1.4 GHz, at the BSP's voltages from 1.2 GHz up and at 1.0 V below (a reset button or watchdog reset keeps the PMIC's voltage, and the boot ROM hangs on the BSP's 0.8 V), the L2 rail following (the boot loader leaves 800 MHz at 1.0 V). Every step checked (clock, both rails, PWM mode, speed); 4 cores at 1.4 GHz for 5 min with checked results, throttled to 1.2-1.3 GHz at 105 C | `docs/09` §16 |
 | DisplayPort output (mini DP) | done | the same picture as HDMI, 1080p60 on 2 lanes: the driver sets up the transmitter and trains the link on hot plug, then the firmware mirrors HDMI to it. Seen on a VGA monitor through an ATEN VC920. Passive DP++ adapters cannot work (no dual mode on this board) | `docs/09` §20 |
-| HDMI output (the board's own) | done | own DRM driver on the audio firmware's video output: one plane at 1080p60 (the mode the boot loader sets), fbdev emulation, so `tty1` with a login prompt is on HDMI. Checked by cabling HDMI OUT to the board's own HDMI IN and capturing it: colour bars, the console, and a KMS client's SETCRTC and page flip (with its flip event) | `docs/09` §20 |
+| HDMI output (the board's own) | done | own DRM driver on the audio firmware's video output: one plane, fbdev emulation, so `tty1` with a login prompt is on HDMI. The monitor's EDID is read over the output's DDC (I2C1), HPD is polled, and a mode change becomes a new TV system for the firmware: 480p, 576p, 720p, 1080i and 1080p at 24-60 Hz, with the 1000/1001 rates. Checked by cabling HDMI OUT to the board's own HDMI IN and capturing it: every mode the EDID lists, colour bars, the console, and a KMS client's SETCRTC and page flip (with its flip event) | `docs/09` §20, §24 |
 | ATX lines (GPIO) | prepared, not tried | the MISC GPIO controller (mainline `gpio-rtd`) as `/dev/kvmd-gpio`; four header pins chosen and checked (GPIO function, inputs, pull-ups, edge detection can be requested); kvmd accepts the config. ATX stays off: no ATX board was connected | §7 of this file |
 | Package updates | done | `pacman -Syu` works; ustreamer and kvmd are held back (IgnorePkg) | §12 |
 
@@ -197,8 +197,11 @@ Not done:
   speaks DP (a monitor, or an adapter with a converter chip such as the
   ATEN VC920, mini DP to VGA). Passive mini DP to HDMI adapters (ATEN
   VC980) cannot work: the board has no DP++ dual mode (`docs/09` §20).
-- **Other HDMI output modes**: the output runs at the mode the boot loader
-  set (1080p60); the driver does not change it or read the monitor's EDID.
+- **HDMI output above 1080p**: not offered. A 2160p framebuffer does not
+  fit the scanout pool, which has to be below 512 MiB for the firmware to
+  read it, and nothing more is free down there (`docs/09` §24). While a DP
+  sink is on, the HDMI side stays at 1080p60, the one mode DP is set up
+  for.
 - **Audio to the target and the webcam (Janus aplay/vplay)**: not possible
   next to the keyboard, mouse and virtual media. Both are USB gadget
   functions on the Type-C port, and its dwc3 has six endpoints of which

@@ -192,9 +192,11 @@ Two things worth knowing before they surprise anyone:
 ## 7. The board's own HDMI output
 
 The HDMI port next to the HDMI input shows a Linux console (`tty1`, with a
-login prompt) at 1080p60, the mode the boot loader sets. A USB keyboard on
-the board's USB ports types into it. It is a DRM device
-(`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as well.
+login prompt). A USB keyboard on the board's USB ports types into it. It is
+a DRM device (`/dev/dri/card0`, `/dev/fb0`), so KMS programs can use it as
+well, in any mode the monitor's EDID lists from 480p to 1080p (480p, 576p,
+720p, 1080i, 1080p at 24 to 60 Hz); the console takes the monitor's
+preferred one, or 1080p on a 4K monitor. Nothing above 1080p is offered.
 
 The mini DisplayPort output shows the same console, at 1080p60, when a
 DisplayPort sink is plugged in: a DP monitor, or an adapter with a

@@ -2444,11 +2444,7 @@ answers on AUX. Results:
   later, it comes up on the next HPD poll.
 - HDMI kept working alongside it.
 
-Not done:
-
-- The mode stays what u-boot set. Changing it would go through kernel RPC
-  27 (`ConfigTVSystem`), with the monitor's EDID read over the
-  transmitter's DDC.
+The mode was then what u-boot set; changing it came later (§24).
 
 ## 21. eth0: SB2, a transmitter that stopped, and a MAC that changed (2026-10-04)
 
@@ -2796,7 +2792,151 @@ the network's: raw TCP from the same PC ran at 112.5 MB/s. On the board,
 kvmd took a local upload at 19-21 MB/s and `dd` wrote the store at
 24 MB/s. The network, nginx/TLS and kvmd share four A53 cores.
 
-## 24. Sources
+## 24. HDMI output modes (2026-10-08)
+
+Until now the board's own HDMI output ran only the mode the boot loader
+set, 1080p60 (§20). It now offers the monitor's modes, read from its
+EDID, that the audio firmware has a TV system for, and changes the
+firmware's TV system when a KMS client (or fbcon) sets one.
+
+### What the driver does
+
+- **EDID.** The HDMI output's DDC is the BSP's `i2c_1` (`0x98007c00`,
+  "i2c-num 1" in its hdmitx driver). It is the same DesignWare block as
+  the PMIC's I2C0, so mainline's `i2c-designware` drives it: ISO clock
+  bit 10, ISO reset `I2C_1`, ISO interrupt 11, pins `i2c_scl_1`/`i2c_sda_1`
+  (MUXPAD1 bits 15:12, function 1). A `realtek,rtd1295-hdmitx` node points
+  `rtd129x-vo` at it (`ddc-i2c-bus`) and at ISO for the HPD line.
+- **HPD** is ISO GPIO 6 (`gpio-hpd-detect` in the BSP), polled by DRM's
+  output poller.
+- **Modes.** The CEA-861 VICs the BSP's `hdmitx_config.c` offers
+  (`support_vic[]`), with its `vic_to_vo_standard()` mapping to
+  `enum VO_STANDARD`, including the 1000/1001 variants (59.94, 29.97,
+  23.98 Hz) where the firmware has one: 480p, 576p, 720p50/60, 1080i50/60,
+  1080p24/25/30/50/60. Left out: 480i/576i (pixel repetition) and 2160p,
+  below. Without an EDID, all of them are offered, 1080p60 preferred.
+- **A mode change** is kernel RPC 27 (`ConfigTVSystem`) with the TV system
+  queried from the firmware, changed the way `set_hdmitx_format()` changes
+  it: standard, `enProg`, the PAL/NTSC flag in `videoInfo.dataInt0`, HDMI
+  or DVI (from the EDID), 48 kHz audio, and the AVI infoframe bytes (RGB,
+  BT.709 from 720p up and SMPTE 170M below, 4:3 or 16:9, the VIC). What
+  the DP side set (interface type, `pedType`) is kept. Then the plane's
+  window is resized to the mode.
+- `VO_TV_SYSTEM_SIZE` was 56; the structure is 60 bytes
+  (`hdmiInfo.reserved4`), which the DP side had not needed.
+
+### The firmware died on the first mode change
+
+The first `ConfigTVSystem` (to 720p60) never returned. After it, no RPC
+was answered at all, the screen went green, and only a reboot brought the
+firmware back. With no serial cable on the board, the firmware's state was
+read through `/dev/mem`:
+
+- **The OS was stopped, not busy.** `OSTCBCur` (`0x8fc63960`) was the RPC
+  task, and the tick counter at `0x8fc63938` did not move.
+- **Where it stopped.** Searching the firmware's memory for status words
+  (`0xb000....`) followed by a code address found the last exception
+  frame. It had EPC `0x8fb02064` and `sp` inside the RPC task's stack. The
+  return addresses on that stack gave the chain `VO_SetVideoStandard` <-
+  `ConfigVideoStandard_0_svc` <- `ConfigTVSystem_0_svc` <- `audio_handler`.
+
+**The firmware's printf, into memory.** printf (`0x8f9af208`) writes to a ring
+instead of the UART when the pointer at `0x8fc5db1c` is set. At start-up
+the firmware sets it to the IPC block's `printk_buffer` (`0x1f0e8`) if
+that holds a buffer address, which nothing on the ARM side provides. The ring is a Linux-printk-like structure of
+six little-endian words: buffer, size, length, start, start2, end.
+
+- To capture the log, point the pointer at it, fill in a buffer, and set
+  the debug flag that `acpu_quiet()` clears.
+- The buffer was 8 KiB of `rpc_ringbuf` that no ring uses.
+- The firmware's `printf` then logs there instead of the UART, crash dumps
+  included.
+- `tools/acpu-fwlog.py` does all of this (`setup`, then `dump`).
+
+The second try printed:
+
+```
+[VO_SetVideoStandard]st 13 p 1 1 0
+Audio invalid access address = 0x98013208
+Audio invalid access status = 0x0000000a
+FATAL audio invalid access
+EPC:	 0x8fb02064
+...  VO_SetVideoStandard / ConfigVideoStandard_0_svc / ConfigTVSystem_0_svc
+```
+
+**The cause: the LVDS clock was on with nothing behind it.**
+`VO_SetVideoStandard` reads CRT `CLK_EN1`. When bit 16 (LVDS) is set, it
+reads the LVDS/PIF timing generator's `DV_SYNC_INT` (`0x9800982c`).
+
+- `rtd129x-vo`'s DP side turned the TVE and LVDS clocks on when it probed,
+  whether or not a DP sink was there.
+- Without the pixel PLL that the DP setup programs, the block does not
+  answer: `0x98009400` and `0x98009800` read `0xdeadbeef` from the ARM
+  too, and set SB2's invalid-access status.
+- The firmware took its own invalid access (status bit 3) as fatal.
+- In the BSP, `rtk_dptx` opens these clocks only for a DP sink.
+- The DP side now turns its clocks on in `dp_enable()` and off when the
+  sink goes, and turns the LVDS clock off at probe.
+
+**A stale SB2 entry.** The address the firmware printed, `0x98013208`, is
+not the one it read. It is an earlier invalid access by the ARM (status
+bit 1), still latched in `SB2_INV_ADDR`. It is the Type-C port's dwc3
+wrapper, offset 8, which mainline's `dwc3-rtk` writes
+(`WRAP_USB2_PHY_UTMI_REG`) during probe, before the core's clock and
+resets are up. The same address reads fine later. It is harmless to the
+firmware, whose interrupt for ARM invalid accesses is off, and is left as
+it is.
+
+### 2160p
+
+The EDID of the board's own HDMI IN lists 3840x2160 at 24/25/30 and
+4096x2160 at 24, but no 2160p mode is offered.
+
+- **The buffer does not fit.** A 2160p XRGB8888 framebuffer is 35 MB. The
+  scanout pool (`ion_media2`) is 50 MiB.
+- **The pool rounds up.** It is a coherent pool, which hands out
+  power-of-two blocks, so 35 MB takes 64 MiB.
+- **There is nowhere to grow it.** The buffers must be below 512 MiB,
+  where the firmware can read. That space is already the firmware's heaps,
+  the VPU and receiver pools, and the kernel image (at `0x1c000000`).
+
+`mode_config` stops at 1920x1080. A 4K monitor therefore gets the largest
+mode it lists up to 1080p, rather than a console that cannot be
+allocated.
+
+### Verified
+
+HDMI OUT was cabled to the board's own HDMI IN. Each mode was set by a KMS
+client (`tools/kms-mode.py`, raw ioctls: a dumb buffer with colour bars, a
+grey ramp, a 4-pixel white border and a centre cross), captured through
+kvmd, and read back from the receiver.
+
+| Mode (TV system) | Receiver | Picture |
+|---|---|---|
+| 1080p60 (25), 1080p59.94 (30) | 1920x1080, 2200x1125, 60 Hz | right |
+| 1080i60 (18), 1080i59.94 (27) | interlaced, 2200x1125; field rate 59.992 / 59.943 Hz | right, woven |
+| 1080p50 (26), 1080i50 (19) | 2640x1125, 50 Hz | right |
+| 1080p30 (20) | 74.25 MHz, 30 Hz | right |
+| 1080p24 (22), 1080p23.98 (29) | 2750x1125; 24.004 / 23.938 Hz | right |
+| 720p60 (13), 720p59.94 (28) | 1280x720, 1650x750; 60.017 / 59.933 Hz | right |
+| 576p50 (7) | 720x576, 864x625, 27 MHz | right |
+| 480p59.94 (1) | 720x480, 858x525, 59.94 Hz | right |
+
+- Between modes, fbcon set 1080p60 back each time, which is the reverse
+  path, 13 times over.
+- The console came back at 1080p60 after the last one.
+- HDMI-in audio (`arecord` on `hw:hdmirx`), kvmd and HID were unaffected.
+
+**Not checked:**
+
+- **The DP output with the new clock handling.** No DP sink was attached.
+- **DVI sinks.**
+- **HPD while unplugging.**
+
+While a DP sink is on, the HDMI side offers only 1080p60, the one mode the
+DP side is set up for.
+
+## 25. Sources
 
 | Source | Used for |
 |--------|----------|
@@ -2831,3 +2971,6 @@ kvmd took a local upload at 19-21 MB/s and `dd` wrote the store at
 | `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/crt_reg.h`, `rtk_dptx/dptx_hwapi.c` | `PLL_HDMI`, `PLL_VODMA` fields; how the DP driver prepares the HDMI PLL (§14) |
 | `pikvm/packages` `packages/linux-rpi-pikvm/1001`-`1401` | PiKVM's kernel patches: HID, mass storage, nbd (§23) |
 | `pikvm/os` `stages/arch/pikvm/Dockerfile.part` | What PiKVM OS installs and enables: tesseract, kvmd-nbd (§23) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/media/platform/rtk_hdmitx/` (`hdmitx_config.c`, `hdmitx_api.c`, `hdmitx_rpc.h`), `u-boot-rtk/drivers/logo_disp/rtk_rpc.h` | The VICs offered, VIC to TV system, the AVI infoframe bytes, `VIDEO_RPC_VOUT_CONFIG_TV_SYSTEM` (§24) |
+| `vendor/bpi-w2-bsp/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/rtd-1296.dtsi`, `drivers/pinctrl/realtek/pinctrl-rtd129x.h` | The HDMI DDC (`i2c_1`): address, interrupt, clock, reset, pins; the HPD GPIO (§24) |
+| `vendor/bpi-w2-bsp/linux-rtk/drivers/soc/realtek/common/rtk_sb2_dbg.c`, `rtd119x/include/reg_sb2.h` | SB2's invalid-access registers (§24) |
