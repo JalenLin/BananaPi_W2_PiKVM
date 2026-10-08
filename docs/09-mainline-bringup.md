@@ -2878,6 +2878,17 @@ reads the LVDS/PIF timing generator's `DV_SYNC_INT` (`0x9800982c`).
 - The DP side now turns its clocks on in `dp_enable()` and off when the
   sink goes, and turns the LVDS clock off at probe.
 
+**The same crash after unplugging DP.** With a DP sink plugged in and then
+unplugged, the next mode change died the same way, at EPC `0x8fb03418`.
+
+- The LVDS clock was off by then, but the TV system still said
+  `interfaceType` 4 (HDMI and DP) with the DP `pedType`.
+- On that path the firmware reads the timing generator without looking
+  at the clock.
+- Unplugging now first gives the firmware its TV system back as it was
+  before DP (interface type and `pedType`, saved in `dp_enable()`), then
+  turns the clocks off.
+
 **A stale SB2 entry.** The address the firmware printed, `0x98013208`, is
 not the one it read. It is an earlier invalid access by the ARM (status
 bit 1), still latched in `SB2_INV_ADDR`. It is the Type-C port's dwc3
@@ -2927,14 +2938,20 @@ kvmd, and read back from the receiver.
 - The console came back at 1080p60 after the last one.
 - HDMI-in audio (`arecord` on `hw:hdmirx`), kvmd and HID were unaffected.
 
-**Not checked:**
+With the ATEN VC920 and a VGA monitor on the mini DP output:
 
-- **The DP output with the new clock handling.** No DP sink was attached.
-- **DVI sinks.**
-- **HPD while unplugging.**
+- **Plug in.** DP trained in 0.35 s, and only then did the TVE and LVDS
+  clocks come on. The monitor showed the console, and then the KMS test
+  pattern.
+- **While DP is on,** the HDMI side lists 1080p60 only, the one mode the DP
+  side is set up for. A SETCRTC with 720p fails with `EINVAL`, and the
+  firmware is not called.
+- **Unplug.** "DisplayPort off", the clocks are off, and all 13 HDMI modes
+  are back.
+- **After the unplug,** all 13 modes were set again. The receiver measured
+  each, and the firmware logged no error.
 
-While a DP sink is on, the HDMI side offers only 1080p60, the one mode the
-DP side is set up for.
+**Not checked:** DVI sinks, and unplugging the HDMI cable.
 
 ## 25. Sources
 

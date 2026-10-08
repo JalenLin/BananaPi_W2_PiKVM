@@ -15,10 +15,11 @@
  *
  * Hot plug: the HPD line is ISO GPIO 7, which is polled.
  *
- * The transmitter's clocks (TVE, LVDS) are on only while a sink is: the
- * firmware reads the LVDS timing generator whenever its clock is on, and
- * without the pixel PLL behind it that read is an invalid access, which
- * the firmware takes as fatal (in VO_SetVideoStandard, on a mode change).
+ * The transmitter's clocks (TVE, LVDS) are on, and DP is in the firmware's
+ * TV system, only while a sink is: on a mode change (VO_SetVideoStandard)
+ * the firmware reads the LVDS timing generator when either says DP, and
+ * without the clocks and the pixel PLL behind it that read is an invalid
+ * access, which the firmware takes as fatal.
  */
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -147,6 +148,7 @@ struct vo_dp {
 	bool connected;
 	bool on;
 	unsigned int tries, polls;
+	__be32 if_type, ped_type;	/* the TV system's, before DP */
 };
 
 static void dp_update(void __iomem *reg, u32 clear, u32 set)
@@ -546,6 +548,8 @@ static int dp_enable(struct vo_dp *dp)
 	if (ret)
 		goto err;
 	dev_dbg(vo->dev, "TV system %*ph\n", VO_TV_SYSTEM_SIZE, tv);
+	dp->if_type = *(__be32 *)(tv + VO_TV_INTERFACE_TYPE);
+	dp->ped_type = *(__be32 *)(tv + VO_TV_PED_TYPE);
 	*(__be32 *)(tv + VO_TV_INTERFACE_TYPE) =
 		cpu_to_be32(VO_INTERFACE_HDMI_AND_DP_SAME_SOURCE);
 	*(__be32 *)(tv + VO_TV_PED_TYPE) =
@@ -560,6 +564,27 @@ err:
 	dp_off(dp);
 	dp_power_off(dp);
 	return ret;
+}
+
+/*
+ * The sink is gone: the firmware gets its TV system back without DP first.
+ * With DP still in it, a later mode change reads the LVDS timing generator
+ * whatever the clock says, and that read, with the clocks off, is fatal.
+ */
+static void dp_disable(struct vo_dp *dp)
+{
+	struct rtd_vo *vo = dp->vo;
+	u8 tv[VO_TV_SYSTEM_SIZE];
+
+	if (!vo_query_tv_system(vo, tv)) {
+		*(__be32 *)(tv + VO_TV_INTERFACE_TYPE) = dp->if_type;
+		*(__be32 *)(tv + VO_TV_PED_TYPE) = dp->ped_type;
+		if (vo_config_tv_system(vo, tv))
+			dev_err(vo->dev, "DP still in the TV system\n");
+	}
+	dp_off(dp);
+	dp_power_off(dp);
+	dev_info(vo->dev, "DisplayPort off\n");
 }
 
 static bool dp_hpd(struct vo_dp *dp)
@@ -581,8 +606,7 @@ static void dp_hpd_work(struct work_struct *work)
 		dp->polls = 0;		/* the first try right away */
 		dev_info(dp->vo->dev, "DP %s\n", hpd ? "connected" : "disconnected");
 		if (!hpd && dp->on) {
-			dp_off(dp);
-			dp_power_off(dp);
+			dp_disable(dp);
 			dp->on = false;
 		}
 		if (hpd)
