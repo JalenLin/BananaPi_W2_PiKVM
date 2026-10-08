@@ -13,7 +13,8 @@ SHA-256 of every file.
 
 | Release | Kernel | Files |
 |---|---|---|
-| `v2.1-kernel6.18` (recommended) | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media (also by URL and from remote servers), HDMI audio, VNC, OCR, VESA and custom input modes, the HDMI and mini DP outputs, eMMC boot | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+| `v2.2-kernel6.18` (recommended) | Linux 6.18 LTS, Arch Linux ARM + PiKVM's packages: H.264/WebRTC, virtual media (also by URL and from remote servers), HDMI audio, VNC, OCR, VESA and custom input modes, the HDMI output in the monitor's modes up to 1080p, the mini DP output, eMMC boot | `bpiw2-pikvm-mainline.img.xz` (SD card), `bpiw2-pikvm-mainline-emmc.img.xz` (eMMC) |
+| `v2.1-kernel6.18` | v2.2 adds the HDMI output's other modes (480p to 1080p, from the monitor's EDID) | same files |
 | `v2.0-kernel6.18` | The first mainline release; v2.1 adds remote images (NBD), VNC, OCR and sizes beyond the BSP's list | same files |
 | `v1.1-bsp4.9` | BPI's 4.9.119 BSP kernel, Debian 13, built from `main` | `bpiw2-pikvm.img.xz` (SD card) |
 

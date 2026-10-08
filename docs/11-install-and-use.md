@@ -21,7 +21,7 @@ from `kernel-6.18` at `40f058e`; the eMMC install and the SD image again on
 
 Both are the same system: same kernel, same packages, same Web UI.
 Prebuilt, xz-compressed copies are on the GitHub Releases page
-(`v2.1-kernel6.18`), or build them with `make image-mainline` and
+(`v2.2-kernel6.18`), or build them with `make image-mainline` and
 `make image-emmc` (§2 of `10-mainline-summary.md`).
 
 A board can hold both. The eMMC's boot loader tries the SD card first, so

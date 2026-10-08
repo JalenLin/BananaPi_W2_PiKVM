@@ -79,6 +79,27 @@ was then checked on its own, on 2026-10-05:
 - **Virtual media.** A 16 MiB image went through kvmd as a flash drive, and
   the Pi read it back md5 equal.
 
+**Release check, 2026-10-09** (`v2.2-kernel6.18`, built at `cd10107`:
+the HDMI output modes of `docs/09` §24; the rootfs is v2.1's). Both images
+were inspected the same way as v2.1's (no keys of any kind, the new
+`rtd129x-vo` and the `hdmitx`/`i2c1` nodes present, the motd naming
+`cd10107`). The kernel was also built from a fresh clone. HDMI OUT was
+looped into HDMI IN for the checks on both paths:
+- all 13 HDMI output modes the loop's EDID lists, read back from the
+  receiver, with no firmware error;
+- MJPEG 29.5 fps and H.264 30 fps with a changing picture on `tty1`;
+- HID online, a 16 MiB upload through kvmd md5 equal, `arecord` on
+  `hw:hdmirx`.
+
+| Path | Verified by |
+|---|---|
+| eMMC alone (`bpikvm-install-emmc` from the SD system, the card's boot files moved aside) | both partitions read back sha256 equal; first boot grew root to 6.8 GiB, made its keys, no failed unit; the checks above |
+| SD card, the eMMC's u-boot (SW4 = 0, card in) | written from that eMMC system, the whole image read back sha256 equal; first boot grew `BPI-MSD` to 218 GiB, no failed unit; the checks above |
+
+The DP output (ATEN VC920 to VGA) was checked on the same kernel before
+the images were built: plug in, unplug, and every HDMI mode after
+(`docs/09` §24).
+
 **Release check, 2026-10-08** (`v2.1-kernel6.18`, built at `f564790`:
 the fixes of `docs/09` §23, kvmd 4.224 with patch 0003). Both images were
 built from the tree and inspected:
